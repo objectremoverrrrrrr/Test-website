@@ -1,0 +1,7 @@
+
+User-agent: *
+Allow: /
+Disallow: /dashboard.html
+Disallow: /database/
+
+Sitemap: https://qualitics.replit.app/sitemap.xml

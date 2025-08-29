@@ -1,0 +1,5752 @@
+
+// Helper function to format product price with discount display
+function formatProductPrice(product) {
+    if (!product.discount || product.discount === 0) {
+        return product.price;
+    }
+    
+    const originalPrice = parseFloat(product.originalPrice.replace('$', ''));
+    const currentPrice = parseFloat(product.price.replace('$', ''));
+    
+    return {
+        current: product.price,
+        original: product.originalPrice,
+        discount: product.discount,
+        savings: `$${(originalPrice - currentPrice).toFixed(2)}`
+    };
+}
+
+// Environment variables (in production, these would be loaded from server)
+const GOOGLE_CLIENT_ID = '664588681727-tq89ueggq6bba6uqvkfkad3qtrfvvihf.apps.googleusercontent.com';
+const EMAILJS_SERVICE_ID = 'service_yx5g41q';
+const EMAILJS_TEMPLATE_ID_ADMIN = 'template_wx38zp9'; // Template for admin notifications
+const EMAILJS_TEMPLATE_ID_USER = 'template_m8y5aq5'; // Template for user confirmations
+const EMAILJS_PUBLIC_KEY = 'NImA9IqsUv_jw2goB';
+
+// Global variables (prevent duplicate declarations)
+if (typeof window.currentUser === 'undefined') {
+    window.currentUser = null;
+}
+if (typeof window.isAuthenticated === 'undefined') {
+    window.isAuthenticated = false;
+}
+if (typeof window.currentProducts === 'undefined') {
+    window.currentProducts = [];
+}
+if (typeof window.currentTab === 'undefined') {
+    window.currentTab = 'products';
+}
+if (typeof window.authToken === 'undefined') {
+    window.authToken = null;
+}
+if (typeof window.signInAttempts === 'undefined') {
+    window.signInAttempts = 0;
+}
+
+// Use window references to prevent redeclaration errors
+let currentUser = window.currentUser;
+let isAuthenticated = window.isAuthenticated;
+let currentProducts = window.currentProducts;
+let currentTab = window.currentTab;
+let authToken = window.authToken;
+let signInAttempts = window.signInAttempts;
+
+// Helper function to safely parse localStorage (global)
+window.safeLocalStorageParse = function(key, fallback = []) {
+    try {
+        const rawData = localStorage.getItem(key);
+        if (!rawData) return fallback;
+        
+        // Check for corrupted base64 data
+        if (rawData.startsWith('JTVCJTdCJT') || rawData.includes('%')) {
+            console.warn(`Detected corrupted localStorage data for ${key}, resetting...`);
+            localStorage.removeItem(key);
+            return fallback;
+        }
+        
+        return JSON.parse(rawData);
+    } catch (error) {
+        console.error(`Error parsing localStorage ${key}:`, error);
+        localStorage.removeItem(key);
+        return fallback;
+    }
+};
+
+const safeLocalStorageParse = window.safeLocalStorageParse;
+
+// Enhanced security integration
+if (typeof window.securityManager !== 'undefined') {
+    // Replace standard localStorage with secure storage for sensitive data
+    const originalSetItem = localStorage.setItem;
+    const originalGetItem = localStorage.getItem;
+    
+    // List of sensitive data keys that should be encrypted
+    const sensitiveKeys = [
+        'currentUser', 'authToken', 'registeredUsers', 
+        'qualityPoints', 'premiumMembers', 'adminSession',
+        'contactSubmissions', 'purchases'
+    ];
+    
+    // Override localStorage for sensitive data
+    Storage.prototype.setItem = function(key, value) {
+        if (sensitiveKeys.includes(key) && window.securityManager) {
+            window.securityManager.secureSetItem(key, JSON.parse(value));
+        } else {
+            originalSetItem.call(this, key, value);
+        }
+    };
+    
+    Storage.prototype.getItem = function(key) {
+        if (sensitiveKeys.includes(key) && window.securityManager) {
+            const data = window.securityManager.secureGetItem(key);
+            return data ? JSON.stringify(data) : null;
+        } else {
+            return originalGetItem.call(this, key);
+        }
+    };
+}
+
+// Global showToast function
+window.showToast = function(message, type = 'info') {
+    console.log(`TOAST (${type.toUpperCase()}): ${message}`);
+    
+    // Create toast container if it doesn't exist
+    let toastContainer = document.getElementById('toastContainer');
+    if (!toastContainer) {
+        toastContainer = document.createElement('div');
+        toastContainer.id = 'toastContainer';
+        toastContainer.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        `;
+        document.body.appendChild(toastContainer);
+    }
+    
+    // Create toast element
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.style.cssText = `
+        padding: 12px 16px;
+        border-radius: 6px;
+        color: white;
+        font-weight: 500;
+        max-width: 300px;
+        word-wrap: break-word;
+        opacity: 0;
+        transform: translateX(100%);
+        transition: all 0.3s ease;
+        font-family: 'Rajdhani', sans-serif;
+    `;
+    
+    // Set background color based on type
+    switch(type) {
+        case 'success': toast.style.background = '#4CAF50'; break;
+        case 'error': toast.style.background = '#f44336'; break;
+        case 'warning': toast.style.background = '#ff9800'; break;
+        default: toast.style.background = '#2196F3';
+    }
+    
+    toast.textContent = message;
+    toastContainer.appendChild(toast);
+    
+    // Animate in
+    setTimeout(() => {
+        toast.style.opacity = '1';
+        toast.style.transform = 'translateX(0)';
+    }, 10);
+    
+    // Remove after 3 seconds
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => {
+            if (toast.parentNode) {
+                toast.remove();
+            }
+            if (toastContainer.children.length === 0) {
+                toastContainer.remove();
+            }
+        }, 300);
+    }, 3000);
+};
+
+// Premium and Quality Points System - REAL IMPLEMENTATION
+const QUALITY_POINTS_PER_PURCHASE = 1.0; // 1 point per purchase
+const QUALITY_POINT_DISCOUNT = 0.02; // 2% discount per point
+const PREMIUM_DISCOUNT = 0.05; // 5% for premium members
+const PREMIUM_QUALITY_BONUS = 2; // Premium members get 2x quality points
+
+// API base URL
+const API_BASE = 'https://qualitics-production-1.onrender.com/api';
+
+// Helper function for API calls
+async function apiCall(endpoint, options = {}) {
+    const defaultOptions = {
+        headers: {
+            'Content-Type': 'application/json',
+            ...(authToken && { 'Authorization': `Bearer ${authToken}` })
+        }
+    };
+
+    try {
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            ...defaultOptions,
+            ...options,
+            headers: { ...defaultOptions.headers, ...options.headers }
+        });
+
+        if (!response.ok) {
+            throw new Error(`API call failed: ${response.status} ${response.statusText}`);
+        }
+
+        // Check if response has content
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+            const text = await response.text();
+            if (text.trim() === '') {
+                return { success: true };
+            }
+            return JSON.parse(text);
+        } else {
+            return { success: true };
+        }
+    } catch (error) {
+        console.error('API call error:', error);
+        logSystemEvent(`API call error to ${endpoint}: ${error.message}`, 'error', 'apiCall', 'script.js');
+        throw error;
+    }
+}
+
+// Initialize EmailJS
+function initEmailJS() {
+    try {
+        if (typeof emailjs !== 'undefined' && emailjs.init) {
+            emailjs.init(EMAILJS_PUBLIC_KEY);
+            console.log('✅ EmailJS initialized successfully');
+            logSystemEvent('EmailJS initialized successfully', 'info', 'initEmailJS', 'script.js');
+        } else {
+            // Wait for EmailJS to load
+            console.log('⏳ Waiting for EmailJS library to load...');
+            setTimeout(() => {
+                if (typeof emailjs !== 'undefined' && emailjs.init) {
+                    emailjs.init(EMAILJS_PUBLIC_KEY);
+                    console.log('✅ EmailJS initialized successfully (delayed)');
+                    logSystemEvent('EmailJS initialized successfully (delayed)', 'info', 'initEmailJS', 'script.js');
+                } else {
+                    console.warn('⚠️ EmailJS library still not available after wait');
+                    logSystemEvent('EmailJS library not available after wait', 'warning', 'initEmailJS', 'script.js');
+                }
+            }, 2000);
+        }
+    } catch (error) {
+        console.error('EmailJS initialization failed:', error);
+        logSystemEvent(`EmailJS initialization failed: ${error.message}`, 'error', 'initEmailJS', 'script.js');
+    }
+}
+
+// Page transition functionality
+function initPageTransition() {
+    const pageTransition = document.getElementById('pageTransition');
+    if (pageTransition) {
+        setTimeout(() => {
+            pageTransition.style.opacity = '0';
+        }, 100);
+    }
+}
+
+// Google Sign-In functionality
+function initGoogleSignIn() {
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.onload = () => {
+        try {
+            if (window.google && window.google.accounts && window.google.accounts.id) {
+                window.google.accounts.id.initialize({
+                    client_id: GOOGLE_CLIENT_ID,
+                    callback: handleCredentialResponse,
+                    auto_select: false,
+                    cancel_on_tap_outside: true,
+                    ux_mode: 'popup',
+                    context: 'signin',
+                    // Enable FedCM for One Tap
+                    use_fedcm_for_prompt: true,
+                    // Enable FedCM for Button (optional)
+                    use_fedcm_for_button: true
+                });
+
+                const signInBtn = document.getElementById('google-signin-btn');
+                if (signInBtn) {
+                    window.google.accounts.id.renderButton(signInBtn, {
+                        theme: 'outline',
+                        size: 'large',
+                        width: 250,
+                        type: 'standard',
+                        shape: 'rectangular',
+                        text: 'signin_with',
+                        logo_alignment: 'left'
+                    });
+                }
+
+                console.log('Google Sign-In initialized successfully with FedCM');
+            } else {
+                throw new Error('Google Sign-In API not available');
+            }
+        } catch (error) {
+            console.error('Google Sign-In initialization failed:', error);
+            logSystemEvent(`Google Sign-In initialization failed: ${error.message}`, 'error', 'initGoogleSignIn', 'script.js');
+            showToast('Google Sign-In unavailable. Using basic auth.', 'warning');
+        }
+    };
+    script.onerror = () => {
+        console.error('Failed to load Google Sign-In script');
+        logSystemEvent('Failed to load Google Sign-In script', 'error', 'initGoogleSignIn', 'script.js');
+        showToast('Google Sign-In service unavailable', 'error');
+    };
+    document.head.appendChild(script);
+}
+
+// Handle Google Sign-In response
+async function handleCredentialResponse(response) {
+    try {
+        if (!response || !response.credential) {
+            throw new Error('Invalid credential response');
+        }
+
+        const payload = JSON.parse(atob(response.credential.split('.')[1]));
+
+        const userInfo = {
+            email: payload.email,
+            name: payload.name,
+            given_name: payload.given_name,
+            picture: payload.picture
+        };
+
+        console.log('Attempting to authenticate user:', userInfo.email);
+
+        // Secure Ban System Check - Ultra-high security validation
+        if (window.SecureBanSystem) {
+            try {
+                const accessResult = await window.SecureBanSystem.checkUserAccess(userInfo.email);
+                if (!accessResult.allowed) {
+                    console.log('🚫 User access denied by secure ban system');
+                    
+                    // Log the security event without revealing details
+                    logSystemEvent(`Authentication blocked by security system for ${userInfo.email}: ${accessResult.reason}`, 'warning', 'handleCredentialResponse', 'script.js');
+                    
+                    // Show user-friendly message
+                    showToast('Access denied. Contact support if you believe this is an error.', 'error');
+                    
+                    // Additional security logging for suspicious activity
+                    if (window.SecureLogger) {
+                        window.SecureLogger.logSecure('authentication_blocked', {
+                            email: userInfo.email,
+                            reason: accessResult.reason,
+                            threatLevel: accessResult.threatLevel || 'high',
+                            timestamp: new Date().toISOString(),
+                            userAgent: navigator.userAgent,
+                            ip: 'pending_detection'
+                        });
+                    }
+                    
+                    return; // Stop authentication process
+                }
+                
+                // Log successful security check
+                if (window.SecureLogger) {
+                    window.SecureLogger.logSecure('authentication_allowed', {
+                        email: userInfo.email,
+                        securityScore: accessResult.securityScore || 0,
+                        timestamp: new Date().toISOString()
+                    });
+                }
+            } catch (banSystemError) {
+                console.error('🔒 Secure ban system check failed:', banSystemError);
+                // Allow authentication but log the error
+                logSystemEvent(`Secure ban system error for ${userInfo.email}: ${banSystemError.message}`, 'error', 'handleCredentialResponse', 'script.js');
+            }
+        }
+
+        try {
+            const authResponse = await apiCall('/auth/google', {
+                method: 'POST',
+                body: JSON.stringify({ credential: response.credential, userInfo })
+            });
+
+            if (authResponse && authResponse.success) {
+                currentUser = window.currentUser = authResponse.user;
+                authToken = window.authToken = authResponse.token;
+                isAuthenticated = window.isAuthenticated = true;
+                signInAttempts = 0; // Reset attempts on successful sign-in
+
+                localStorage.setItem('user', JSON.stringify(currentUser));
+                localStorage.setItem('authToken', authToken);
+                localStorage.setItem('isAuthenticated', 'true');
+
+                updateAuthUI();
+                updateUserActivity(currentUser);
+                showToast('Successfully signed in!', 'success');
+                logSystemEvent(`User ${currentUser.email} signed in successfully via Google`, 'info', 'handleCredentialResponse', 'script.js');
+            } else {
+                throw new Error(authResponse?.error || 'Authentication failed');
+            }
+        } catch (apiError) {
+            console.warn('Backend authentication failed, using local storage:', apiError);
+            logSystemEvent(`Backend authentication failed for ${userInfo.email}, falling back to local: ${apiError.message}`, 'warning', 'handleCredentialResponse', 'script.js');
+
+            currentUser = window.currentUser = userInfo;
+            isAuthenticated = window.isAuthenticated = true;
+            signInAttempts = window.signInAttempts = 0; // Reset attempts on successful sign-in
+
+            localStorage.setItem('user', JSON.stringify(currentUser));
+            localStorage.setItem('isAuthenticated', 'true');
+
+            updateAuthUI();
+            updateUserActivity(currentUser);
+            showToast('Successfully signed in! (Local mode)', 'success');
+        }
+
+    } catch (error) {
+        console.error('Error handling credential response:', error);
+        logSystemEvent(`Error handling credential response: ${error.message}`, 'error', 'handleCredentialResponse', 'script.js');
+        showToast('Sign-in failed. Please try again.', 'error');
+    }
+}
+
+// REAL Quality Points Implementation
+function getUserData(email) {
+    try {
+        const users = safeLocalStorageParse('registeredUsers', []);
+        return users.find(u => u.email === email) || null;
+    } catch (error) {
+        console.error('Error getting user data:', error);
+        logSystemEvent(`Error getting user data for ${email}: ${error.message}`, 'error', 'getUserData', 'script.js');
+        return null;
+    }
+}
+
+function updateUserData(email, data) {
+    try {
+        let users = safeLocalStorageParse('registeredUsers', []);
+        const userIndex = users.findIndex(u => u.email === email);
+
+        if (userIndex !== -1) {
+            users[userIndex] = { ...users[userIndex], ...data };
+        } else {
+            const newUser = { 
+                email, 
+                joinDate: new Date().toISOString(),
+                qualityPoints: 0,
+                totalPurchases: 0,
+                totalSpent: 0,
+                isPremium: false,
+                ...data 
+            };
+            users.push(newUser);
+        }
+
+        localStorage.setItem('registeredUsers', JSON.stringify(users));
+
+        // Update current user if it matches
+        if (currentUser && currentUser.email === email) {
+            const updatedUser = users.find(u => u.email === email);
+            currentUser = { ...currentUser, ...updatedUser };
+            localStorage.setItem('user', JSON.stringify(currentUser));
+            updateAuthUI();
+        }
+    } catch (error) {
+        console.error('Error updating user data:', error);
+        logSystemEvent(`Error updating user data for ${email}: ${error.message}`, 'error', 'updateUserData', 'script.js');
+    }
+}
+
+function isPremiumUser(email) {
+    const userData = getUserData(email);
+    return userData?.isPremium || false;
+}
+
+function getQualityPoints(email) {
+    const userData = getUserData(email);
+    return userData?.qualityPoints || 0;
+}
+
+function addQualityPoints(email, purchases = 1) {
+    try {
+        const userData = getUserData(email) || {};
+        const isPremium = userData.isPremium || false;
+        const pointsToAdd = purchases * QUALITY_POINTS_PER_PURCHASE * (isPremium ? PREMIUM_QUALITY_BONUS : 1);
+
+        const newQualityPoints = (userData.qualityPoints || 0) + pointsToAdd;
+        const newTotalPurchases = (userData.totalPurchases || 0) + purchases;
+
+        updateUserData(email, {
+            qualityPoints: newQualityPoints,
+            totalPurchases: newTotalPurchases,
+            lastPurchase: new Date().toISOString()
+        });
+
+        showToast(`You earned ${pointsToAdd} Quality Points!`, 'success');
+        logSystemEvent(`Added ${pointsToAdd} quality points for ${email}`, 'info', 'addQualityPoints', 'script.js');
+        return pointsToAdd;
+    } catch (error) {
+        console.error('Error adding quality points:', error);
+        logSystemEvent(`Error adding quality points for ${email}: ${error.message}`, 'error', 'addQualityPoints', 'script.js');
+        return 0;
+    }
+}
+
+function togglePremiumSubscription(email) {
+    try {
+        if (!email) {
+            showToast('Invalid user email for premium upgrade', 'error');
+            return false;
+        }
+
+        const userData = getUserData(email) || {};
+        const newPremiumStatus = !userData.isPremium;
+
+        updateUserData(email, {
+            isPremium: newPremiumStatus,
+            premiumStartDate: newPremiumStatus ? new Date().toISOString() : null,
+            premiumTier: newPremiumStatus ? 'premium' : null
+        });
+
+        // Update current user if it matches
+        if (currentUser && currentUser.email === email) {
+            currentUser.isPremium = newPremiumStatus;
+            localStorage.setItem('user', JSON.stringify(currentUser));
+        }
+
+        const message = newPremiumStatus ? 
+            '🎉 Premium subscription activated! You now get 5% off all purchases and 2x Quality Points!' : 
+            'Premium subscription cancelled';
+
+        showToast(message, newPremiumStatus ? 'success' : 'info');
+        logSystemEvent(`Premium status toggled for ${email} to ${newPremiumStatus}`, 'info', 'togglePremiumSubscription', 'script.js');
+
+        // Force UI updates
+        updateAuthUI();
+
+        // Update cart display if on purchase page
+        if (window.location.pathname.includes('purchase.html') && typeof updateCartDisplay === 'function') {
+            setTimeout(updateCartDisplay, 100);
+        }
+
+        // Update premium buttons
+        const premiumButtons = document.querySelectorAll('.premium-upgrade-btn, #upgradePremiumBtn');
+        premiumButtons.forEach(btn => {
+            if (newPremiumStatus) {
+                btn.innerHTML = '✅ Premium Active';
+                btn.disabled = true;
+                btn.style.background = 'linear-gradient(45deg, #4CAF50, #66BB6A)';
+            } else {
+                btn.innerHTML = '🚀 Activate Premium - FREE';
+                btn.disabled = false;
+                btn.style.background = 'linear-gradient(45deg, #ffd700, #ffed4e)';
+            }
+        });
+
+        return newPremiumStatus;
+    } catch (error) {
+        console.error('Error toggling premium subscription:', error);
+        logSystemEvent(`Error toggling premium for ${email}: ${error.message}`, 'error', 'togglePremiumSubscription', 'script.js');
+        showToast('Failed to update premium status. Please try again.', 'error');
+        return false;
+    }
+}
+
+function calculateDiscounts(subtotal, userEmail) {
+    if (!userEmail || subtotal <= 0) return { discounts: [], finalTotal: subtotal, totalDiscount: 0 };
+
+    const qualityPoints = getQualityPoints(userEmail);
+    const isPremium = isPremiumUser(userEmail);
+
+    let discounts = [];
+    let totalDiscount = 0;
+
+    // Quality Points discount - each point gives 2% off, max 40%
+    if (qualityPoints > 0) {
+        const maxDiscount = 0.4; // 40% max discount
+        const qualityDiscount = Math.min(qualityPoints * QUALITY_POINT_DISCOUNT, maxDiscount);
+        const qualityDiscountAmount = subtotal * qualityDiscount;
+
+        if (qualityDiscountAmount > 0) {
+            discounts.push({
+                type: 'Quality Points Discount',
+                amount: qualityDiscountAmount,
+                description: `${qualityPoints.toFixed(1)} points • ${(qualityDiscount * 100).toFixed(1)}% off`
+            });
+            totalDiscount += qualityDiscountAmount;
+        }
+    }
+
+    // Premium subscription discount
+    if (isPremium) {
+        const premiumDiscountAmount = subtotal * PREMIUM_DISCOUNT;
+        discounts.push({
+            type: 'Premium Member Discount',
+            amount: premiumDiscountAmount,
+            description: `Exclusive ${(PREMIUM_DISCOUNT * 100)}% premium savings`
+        });
+        totalDiscount += premiumDiscountAmount;
+    }
+
+    const finalTotal = Math.max(subtotal - totalDiscount, 0);
+
+    return { discounts, finalTotal, totalDiscount };
+}
+
+// Update authentication UI
+function updateAuthUI() {
+    const authBtn = document.getElementById('authBtn');
+    const dashboardLink = document.getElementById('dashboardLink');
+
+    if (!authBtn) {
+        console.warn('Auth button not found, skipping UI update');
+        return;
+    }
+
+    if (isAuthenticated && currentUser) {
+        const isPremium = isPremiumUser(currentUser.email);
+        const qualityPoints = getQualityPoints(currentUser.email);
+
+        authBtn.innerHTML = `
+            <div class="user-info-container">
+                <div style="display: flex; align-items: center;">
+                    <span class="user-name ${isPremium ? 'premium-user' : ''}">${currentUser.given_name || currentUser.name}</span>
+                    ${isPremium ? '<span class="premium-badge">PREMIUM</span>' : ''}
+                </div>
+                <div class="quality-points">${qualityPoints.toFixed(1)} Quality Points</div>
+            </div>
+            <button class="logout-btn" onclick="signOut()">Sign Out</button>
+        `;
+        authBtn.classList.add('signed-in');
+
+        if (dashboardLink && isAdmin(currentUser.email)) {
+            dashboardLink.style.display = 'block';
+        }
+    } else {
+        authBtn.innerHTML = 'Sign In';
+        authBtn.classList.remove('signed-in');
+        if (dashboardLink) {
+            dashboardLink.style.display = 'none';
+        }
+    }
+}
+
+// Check if user is admin
+function isAdmin(email) {
+    const adminEmails = ['wilsheinkens@gmail.com', 'megatronuspine@gmail.com', 'testqw16@gmail.com', 'ankanmayur0507@gmail.com', 'objectremover57@gmail.com', 'plzman178@gmail.com'];
+    return adminEmails.includes(email);
+}
+
+// Sign out functionality
+function signOut() {
+    isAuthenticated = window.isAuthenticated = false;
+    currentUser = window.currentUser = null;
+    authToken = window.authToken = null;
+
+    localStorage.removeItem('user');
+    localStorage.removeItem('authToken');
+    localStorage.removeItem('isAuthenticated');
+    localStorage.removeItem('currentSessionId'); // Also clear active session
+
+    updateAuthUI();
+    showToast('Successfully signed out!', 'success');
+    logSystemEvent('User signed out successfully', 'info', 'signOut', 'script.js');
+}
+
+// Handle auth button click
+function handleAuthClick() {
+    if (!isAuthenticated) {
+        if (window.google && window.google.accounts && window.google.accounts.id) {
+            try {
+                window.google.accounts.id.prompt((notification) => {
+                    // FedCM-compatible: Only check for skip and dismiss moments
+                    if (notification.isSkippedMoment() || notification.isDismissedMoment()) {
+                        console.log('One Tap not available');
+                        logSystemEvent('Google One Tap skipped or dismissed', 'info', 'handleAuthClick', 'script.js');
+                    }
+                    // Remove deprecated methods: isDisplayMoment(), isDisplayed(), isNotDisplayed(), getNotDisplayedReason(), getSkippedReason()
+                });
+            } catch (error) {
+                console.error('Error showing Google Sign-In prompt:', error);
+                logSystemEvent(`Error showing Google Sign-In prompt: ${error.message}`, 'error', 'handleAuthClick', 'script.js');
+            }
+        } else {
+            console.error('Google Sign-In not properly initialized');
+            logSystemEvent('Google Sign-In not properly initialized', 'error', 'handleAuthClick', 'script.js');
+        }
+    }
+}
+
+// Fallback sign-in method removed - no email prompt fallback
+
+// Contact form functionality
+async function submitContactForm() {
+    try {
+        const name = document.getElementById('contactName').value;
+        const email = document.getElementById('contactEmail').value;
+        const subject = document.getElementById('contactSubject').value;
+        const message = document.getElementById('contactMessage').value;
+
+        if (!name || !email || !subject || !message) {
+            showToast('Please fill in all fields', 'warning');
+            return;
+        }
+
+        // Enforce security policy for contact form submissions
+        if (!enforceSecurityPolicy('submit_contact_form', email)) {
+            showToast('Your request could not be processed due to security policy violations.', 'error');
+            logSystemEvent(`Security policy violation for contact form from ${email}`, 'warning', 'submitContactForm', 'script.js');
+            return;
+        }
+
+        const response = await apiCall('/contact', {
+            method: 'POST',
+            body: JSON.stringify({ name, email, subject, message })
+        });
+
+        if (response.success) {
+            showToast('Thank you for your message! We\'ll get back to you soon.', 'success');
+            document.getElementById('contactForm').reset();
+            closeModal();
+            logSystemEvent(`Contact form submitted by ${email}`, 'info', 'submitContactForm', 'script.js');
+        }
+    } catch (error) {
+        console.error('Contact form error:', error);
+        logSystemEvent(`Contact form submission failed for ${email}: ${error.message}`, 'error', 'submitContactForm', 'script.js');
+        showToast('Failed to send message. Please try again.', 'error');
+    }
+}
+
+// Contact form functionality
+function initContactForm() {
+    const contactForm = document.querySelector('.contact-form');
+    if (contactForm) {
+        contactForm.addEventListener('submit', handleContactSubmit);
+    }
+}
+
+// Modern contact form submission function
+window.submitContactFormModern = async function() {
+    try {
+        const form = document.getElementById('contactFormModern');
+        const submitBtn = form.querySelector('.submit-btn-modern');
+        const originalText = submitBtn.querySelector('.btn-text').textContent;
+
+        const formData = {
+            from_name: form.querySelector('input[name="from_name"]').value,
+            from_email: form.querySelector('input[name="from_email"]').value,
+            subject: form.querySelector('input[name="subject"]').value,
+            message: form.querySelector('textarea[name="message"]').value,
+            to_name: 'Qualitics Production Team'
+        };
+
+        if (!formData.from_name || !formData.from_email || !formData.subject || !formData.message) {
+            showToast('Please fill in all fields', 'warning');
+            return;
+        }
+
+        submitBtn.querySelector('.btn-text').textContent = 'Sending...';
+        submitBtn.disabled = true;
+
+        try {
+            const adminResponse = await emailjs.send(
+                EMAILJS_SERVICE_ID,
+                EMAILJS_TEMPLATE_ID_ADMIN,
+                {
+                    from_name: formData.from_name,
+                    from_email: formData.from_email,
+                    subject: formData.subject,
+                    message: formData.message,
+                    to_name: 'Qualitics Production Team',
+                    reply_to: formData.from_email
+                }
+            );
+
+            const userResponse = await emailjs.send(
+                EMAILJS_SERVICE_ID,
+                EMAILJS_TEMPLATE_ID_USER,
+                {
+                    to_name: formData.from_name,
+                    to_email: formData.from_email,
+                    user_message: formData.message,
+                    reply_to: 'Qualiticsproduction@gmail.com'
+                }
+            );
+
+            if (adminResponse.status === 200 && userResponse.status === 200) {
+                submitBtn.querySelector('.btn-text').textContent = 'Message Sent!';
+                submitBtn.style.background = 'linear-gradient(45deg, #4CAF50, #66BB6A)';
+                form.reset();
+                storeContactSubmission(formData);
+                showToast('Thank you for your message! We\'ll get back to you soon.', 'success');
+                logSystemEvent(`Contact message sent successfully by ${formData.from_email}`, 'info', 'submitContactFormModern', 'script.js');
+
+                setTimeout(() => {
+                    submitBtn.querySelector('.btn-text').textContent = originalText;
+                    submitBtn.disabled = false;
+                    submitBtn.style.background = '';
+                }, 3000);
+            } else {
+                throw new Error(`EmailJS send failed with status - Admin: ${adminResponse.status}, User: ${userResponse.status}`);
+            }
+        } catch (error) {
+            console.error('Email send failed:', error);
+            logSystemEvent(`Email sending failed for ${formData.from_email}: ${error.message}`, 'error', 'submitContactFormModern', 'script.js');
+
+            submitBtn.querySelector('.btn-text').textContent = 'Failed to Send';
+            submitBtn.style.background = 'linear-gradient(45deg, #f44336, #ef5350)';
+            showToast('Failed to send message. Please try again.', 'error');
+
+            setTimeout(() => {
+                submitBtn.querySelector('.btn-text').textContent = originalText;
+                submitBtn.disabled = false;
+                submitBtn.style.background = '';
+            }, 3000);
+        }
+    } catch (error) {
+        console.error('Contact form error:', error);
+        logSystemEvent(`Contact form submission failed: ${error.message}`, 'error', 'submitContactFormModern', 'script.js');
+        showToast('Failed to send message. Please try again.', 'error');
+    }
+};
+
+// REAL Purchase completion with Quality Points
+function completePurchase() {
+    try {
+        const cart = JSON.parse(localStorage.getItem('cart') || '[]');
+
+        if (cart.length === 0) {
+            showToast('Your cart is empty! Please add products first.', 'error');
+            setTimeout(() => {
+                window.location.href = 'products.html';
+            }, 2000);
+            return;
+        }
+
+        if (!isAuthenticated || !currentUser) {
+            showToast('🔑 Please sign in first to complete your purchase', 'warning');
+            logSystemEvent('Purchase attempted without authentication', 'error', 'completePurchase', 'script.js');
+            // Trigger sign-in if not authenticated
+            setTimeout(() => {
+                handleAuthClick();
+            }, 1500);
+            return;
+        }
+
+        // Enforce security policy for purchases
+        if (!enforceSecurityPolicy('complete_purchase', currentUser.email)) {
+            showToast('Your purchase could not be processed due to security policy violations.', 'error');
+            logSystemEvent(`Security policy violation for purchase by ${currentUser.email}`, 'warning', 'completePurchase', 'script.js');
+            return;
+        }
+
+        // Calculate real totals using discounted prices
+        let subtotal = 0;
+        cart.forEach(item => {
+            let itemPrice = parseFloat(item.price.replace(/[^0-9.-]+/g, '')) || 0;
+            subtotal += itemPrice * (item.quantity || 1);
+        });
+
+        const discountInfo = calculateDiscounts(subtotal, currentUser.email);
+        const finalTotal = discountInfo.finalTotal;
+
+        // Award Quality Points based on number of items purchased
+        const pointsEarned = addQualityPoints(currentUser.email, cart.length);
+
+        // Update user's real purchase data
+        const userData = getUserData(currentUser.email) || {};
+        updateUserData(currentUser.email, {
+            totalSpent: (parseFloat(userData.totalSpent) || 0) + finalTotal,
+            totalOrders: (userData.totalOrders || 0) + 1,
+            lastPurchaseDate: new Date().toISOString(),
+            purchaseHistory: [...(userData.purchaseHistory || []), {
+                date: new Date().toISOString(),
+                items: cart.length,
+                total: finalTotal,
+                pointsEarned: pointsEarned
+            }]
+        });
+
+        // Store purchase record
+        const purchases = JSON.parse(localStorage.getItem('purchases') || '[]');
+        purchases.unshift({
+            id: Date.now(),
+            userEmail: currentUser.email,
+            items: cart,
+            subtotal: subtotal,
+            discounts: discountInfo.discounts,
+            finalTotal: finalTotal,
+            pointsEarned: pointsEarned,
+            date: new Date().toISOString()
+        });
+        localStorage.setItem('purchases', JSON.stringify(purchases));
+
+        // Track successful PayPal purchase for analytics
+        trackSuccessfulPurchase(finalTotal, {
+            id: Date.now(),
+            items: cart,
+            userEmail: currentUser.email,
+            date: new Date().toISOString()
+        });
+
+        // Clear cart and promo code
+        localStorage.removeItem('cart');
+        clearAppliedPromoCode();
+
+        const savingsMessage = discountInfo.totalDiscount > 0 ? 
+            ` You saved $${discountInfo.totalDiscount.toFixed(2)}!` : '';
+
+        showToast(
+            `🎉 Purchase completed!${savingsMessage} You earned ${pointsEarned.toFixed(1)} Quality Points!`,
+            'success'
+        );
+        logSystemEvent(`Purchase completed for ${currentUser.email}. Final Total: $${finalTotal.toFixed(2)}`, 'info', 'completePurchase', 'script.js');
+
+        setTimeout(() => {
+            window.location.href = 'products.html';
+        }, 2000);
+    } catch (error) {
+        console.error('Error completing purchase:', error);
+        logSystemEvent(`Error completing purchase for ${currentUser?.email}: ${error.message}`, 'error', 'completePurchase', 'script.js');
+        showToast('An error occurred during purchase. Please try again.', 'error');
+    }
+}
+
+// Handle contact form submission
+async function handleContactSubmit(e) {
+    e.preventDefault();
+
+    // Security: Rate limiting for contact form
+    if (window.isRateLimited && window.isRateLimited('contact_form', 3, 300000)) { // 3 attempts per 5 minutes
+        showToast('Too many contact form submissions. Please wait before trying again.', 'error');
+        return;
+    }
+
+    const form = e.target;
+    const submitBtn = form.querySelector('.submit-btn');
+    const originalText = submitBtn.textContent;
+
+    const rawData = {
+        from_name: form.querySelector('input[type="text"]').value,
+        from_email: form.querySelector('input[type="email"]').value,
+        message: form.querySelector('textarea').value,
+        to_name: 'Qualitics Production Team'
+    };
+
+    // Security: Input sanitization
+    const formData = window.sanitizeObject ? window.sanitizeObject(rawData) : rawData;
+
+    // Security: Email validation
+    if (window.validateEmail && !window.validateEmail(formData.from_email)) {
+        showToast('Please enter a valid email address.', 'error');
+        return;
+    }
+
+    if (!formData.from_name || !formData.from_email || !formData.message) {
+        showToast('Please fill in all fields.', 'error');
+        return;
+    }
+
+    submitBtn.textContent = 'Sending...';
+    submitBtn.disabled = true;
+
+    try {
+        const adminResponse = await emailjs.send(
+            EMAILJS_SERVICE_ID,
+            EMAILJS_TEMPLATE_ID_ADMIN,
+            {
+                from_name: formData.from_name,
+                from_email: formData.from_email,
+                message: formData.message,
+                to_name: 'Qualitics Production Team',
+                reply_to: formData.from_email
+            }
+        );
+
+        const userResponse = await emailjs.send(
+            EMAILJS_SERVICE_ID,
+            EMAILJS_TEMPLATE_ID_USER,
+            {
+                to_name: formData.from_name,
+                to_email: formData.from_email,
+                user_message: formData.message,
+                reply_to: 'support@qualitics.production'
+            }
+        );
+
+        if (adminResponse.status === 200 && userResponse.status === 200) {
+            submitBtn.textContent = 'Message Sent!';
+            submitBtn.style.background = 'linear-gradient(45deg, #4CAF50, #66BB6A)';
+            form.reset();
+            storeContactSubmission(formData);
+            logSystemEvent(`Contact message sent successfully by ${formData.from_email}`, 'info', 'handleContactSubmit', 'script.js');
+
+            setTimeout(() => {
+                submitBtn.textContent = originalText;
+                submitBtn.disabled = false;
+                submitBtn.style.background = '';
+            }, 3000);
+        } else {
+            throw new Error(`EmailJS send failed with status - Admin: ${adminResponse.status}, User: ${userResponse.status}`);
+        }
+    } catch (error) {
+        console.error('Email send failed:', error);
+        logSystemEvent(`Email sending failed for ${formData.from_email}: ${error.message}`, 'error', 'handleContactSubmit', 'script.js');
+
+        submitBtn.textContent = 'Failed to Send';
+        submitBtn.style.background = 'linear-gradient(45deg, #f44336, #ef5350)';
+
+        setTimeout(() => {
+            submitBtn.textContent = originalText;
+            submitBtn.disabled = false;
+            submitBtn.style.background = '';
+        }, 3000);
+
+        showToast('Failed to send message. Please try again.', 'error');
+    }
+}
+
+// Store contact submission
+function storeContactSubmission(formData) {
+    try {
+        const contacts = JSON.parse(localStorage.getItem('contactSubmissions') || '[]');
+        contacts.unshift({
+            from_name: formData.from_name,
+            from_email: formData.from_email,
+            message: formData.message,
+            subject: 'Contact Form Submission',
+            date: new Date().toISOString(),
+            id: Date.now(),
+            status: 'unread'
+        });
+
+        if (contacts.length > 100) {
+            contacts.splice(100);
+        }
+
+        localStorage.setItem('contactSubmissions', JSON.stringify(contacts));
+    } catch (error) {
+        console.error('Error storing contact submission:', error);
+        logSystemEvent(`Error storing contact submission from ${formData.from_email}: ${error.message}`, 'error', 'storeContactSubmission', 'script.js');
+    }
+}
+
+// Load authentication state from localStorage
+function loadAuthState() {
+    try {
+        const savedUser = localStorage.getItem('user');
+        const savedToken = localStorage.getItem('authToken');
+        const savedAuthState = localStorage.getItem('isAuthenticated');
+        const savedSessionId = localStorage.getItem('currentSessionId');
+
+        if (savedUser && savedToken && savedAuthState === 'true') {
+            currentUser = JSON.parse(savedUser);
+            authToken = savedToken;
+            isAuthenticated = true;
+
+            // Restore session if it exists
+            if (savedSessionId) {
+                if (!securityManagerInstance) securityManagerInstance = new SecurityManager();
+                // Re-register the session if it was active
+                if (!securityManagerInstance.activeSessions.has(savedSessionId)) {
+                    securityManagerInstance.createSession(currentUser.email); // Re-create for consistency
+                } else {
+                    securityManagerInstance.updateSessionActivity(savedSessionId);
+                }
+            } else {
+                // If no session ID, create a new one upon loading
+                if (!securityManagerInstance) securityManagerInstance = new SecurityManager();
+                createSecuritySession(currentUser.email);
+            }
+
+            updateAuthUI();
+            validateToken();
+            logSystemEvent(`Authentication state loaded for ${currentUser.email}`, 'info', 'loadAuthState', 'script.js');
+        } else {
+            // If not authenticated, ensure no residual session data is kept
+            localStorage.removeItem('currentSessionId');
+            if (securityManagerInstance && securityManagerInstance.activeSessions) {
+                securityManagerInstance.activeSessions.clear();
+            }
+            logSystemEvent('No active authentication state found', 'info', 'loadAuthState', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error loading authentication state:', error);
+        logSystemEvent(`Error loading authentication state: ${error.message}`, 'error', 'loadAuthState', 'script.js');
+        // Ensure a clean slate if loading fails
+        isAuthenticated = false;
+        currentUser = null;
+        authToken = null;
+        localStorage.clear(); // Potentially too aggressive, consider specific removals
+    }
+}
+
+// Validate token with backend
+async function validateToken() {
+    try {
+        await apiCall('/auth/validate');
+        logSystemEvent('Auth token validated successfully', 'info', 'validateToken', 'script.js');
+    } catch (error) {
+        console.log('Token validation failed, signing out');
+        logSystemEvent(`Auth token validation failed: ${error.message}`, 'warning', 'validateToken', 'script.js');
+        signOut();
+    }
+}
+
+// Check authentication status on page load
+function checkAuthStatus() {
+    const storedUser = localStorage.getItem('user');
+    const storedAuth = localStorage.getItem('isAuthenticated');
+
+    if (storedUser && storedAuth === 'true') {
+        currentUser = JSON.parse(storedUser);
+        isAuthenticated = true;
+    }
+
+    updateAuthUI();
+}
+
+// Dashboard access control
+function checkDashboardAccess() {
+    if (window.location.pathname.includes('dashboard.html')) {
+        if (!isAuthenticated || !isAdmin(currentUser?.email)) {
+            alert('Access denied. Admin privileges required.');
+            logSystemEvent(`Unauthorized access attempt to dashboard by ${currentUser?.email || 'Guest'}`, 'warning', 'checkDashboardAccess', 'script.js');
+            window.location.href = 'index.html';
+            return false;
+        }
+    }
+    return true;
+}
+
+// Modern Dashboard Navigation
+function initDashboardTabs() {
+    const navItems = document.querySelectorAll('.sidebar-nav-link');
+    const sidebarToggle = document.getElementById('sidebarToggle');
+    const sidebar = document.querySelector('.modern-sidebar');
+
+    // Handle navigation clicks
+    navItems.forEach(item => {
+        item.addEventListener('click', async (e) => {
+            e.preventDefault();
+            const targetTab = item.getAttribute('data-tab');
+            await switchTab(targetTab);
+
+            // Update active state
+            navItems.forEach(nav => nav.classList.remove('active'));
+            item.classList.add('active');
+
+            // Close sidebar on mobile
+            if (window.innerWidth <= 768) {
+                sidebar.classList.remove('open');
+            }
+        });
+    });
+
+    // Sidebar toggle for mobile
+    if (sidebarToggle) {
+        sidebarToggle.addEventListener('click', () => {
+            sidebar.classList.toggle('open');
+        });
+    }
+
+    // Close sidebar when clicking outside on mobile
+    document.addEventListener('click', (e) => {
+        if (window.innerWidth <= 768 && 
+            !sidebar.contains(e.target) && 
+            !sidebarToggle.contains(e.target)) {
+            sidebar.classList.remove('open');
+        }
+    });
+
+    // Update counts
+    updateNavigationCounts();
+}
+
+async function switchTab(tabName) {
+    const tabPanels = document.querySelectorAll('.tab-panel');
+    const pageTitle = document.getElementById('pageTitle');
+    const pageSubtitle = document.getElementById('pageSubtitle');
+    const primaryAction = document.getElementById('primaryAction');
+
+    // Hide all panels
+    tabPanels.forEach(panel => {
+        panel.classList.remove('active');
+    });
+
+    // Show target panel
+    const targetPanel = document.getElementById(`${tabName}-panel`);
+    if (targetPanel) {
+        targetPanel.classList.add('active');
+    }
+
+    // Update header based on tab
+    const tabInfo = {
+        analytics: {
+            title: 'Analytics Dashboard',
+            subtitle: 'Real-time insights and metrics',
+            action: 'Export Report'
+        },
+        products: {
+            title: 'Product Management',
+            subtitle: 'Manage your product catalog',
+            action: 'Add Product'
+        },
+        users: {
+            title: 'User Management',
+            subtitle: 'Manage registered users',
+            action: 'Export Users'
+        },
+        customers: {
+            title: 'Customer Insights',
+            subtitle: 'Detailed customer analytics',
+            action: 'View Reports'
+        },
+        contacts: {
+            title: 'Customer Messages',
+            subtitle: 'Contact form submissions',
+            action: 'Export Messages'
+        },
+        security: {
+            title: 'Security Center',
+            subtitle: 'System security monitoring',
+            action: 'Security Report'
+        },
+        bans: {
+            title: 'Ban Management',
+            subtitle: 'Manage banned users and IPs',
+            action: 'Export Bans'
+        },
+        console: {
+            title: 'System Console',
+            subtitle: 'Real-time system logs',
+            action: 'Clear Console'
+        }
+    };
+
+    const info = tabInfo[tabName] || tabInfo.analytics;
+
+    if (pageTitle) pageTitle.textContent = info.title;
+    if (pageSubtitle) pageSubtitle.textContent = info.subtitle;
+    if (primaryAction) {
+        primaryAction.innerHTML = `<span class="btn-icon">⚡</span><span class="btn-text">${info.action}</span>`;
+
+        // Set up primary action click handlers
+        primaryAction.onclick = () => {
+            switch(tabName) {
+                case 'products':
+                    openProductModal();
+                    break;
+                case 'console':
+                    clearSystemLogs();
+                    break;
+                default:
+                    showToast(`${info.action} feature coming soon!`, 'info');
+            }
+        };
+    }
+
+    currentTab = tabName;
+
+    switch(tabName) {
+        case 'products':
+            await loadProductsTable();
+            break;
+        case 'analytics':
+            await loadAnalytics();
+            break;
+        case 'users':
+            loadUsersData();
+            break;
+        case 'customers':
+            loadCustomersData();
+            break;
+        case 'contacts':
+            loadContactSubmissions();
+            break;
+        case 'bans':
+            loadBannedUsers();
+            loadBannedIPs();
+            break;
+        case 'security':
+            loadSecurityData();
+            break;
+        case 'console':
+            loadConsoleTab();
+            break;
+    }
+    logSystemEvent(`Switched to tab: ${tabName}`, 'info', 'switchTab', 'script.js');
+}
+
+// Product Management Functions
+async function initProductManager() {
+    const addProductBtn = document.getElementById('addProductBtn');
+    const productModal = document.getElementById('productFormModal');
+    const productForm = document.getElementById('productForm');
+    const closeBtn = productModal?.querySelector('.modal-close');
+    
+    if (addProductBtn) {
+        addProductBtn.addEventListener('click', () => openProductModal());
+    }
+
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => closeProductModal());
+    }
+
+    if (productModal) {
+        productModal.addEventListener('click', (e) => {
+            if (e.target === productModal) {
+                closeProductModal();
+            }
+        });
+    }
+
+    if (productForm) {
+        productForm.addEventListener('submit', handleProductSubmit);
+    }
+
+    initProductImageUpload();
+    await loadProductsTable(); // Make sure products are loaded before displaying
+    initPriceInput();
+}
+
+function openProductModal(product = null) {
+    try {
+        const modal = document.getElementById('productFormModal');
+        const title = document.getElementById('productFormTitle');
+        const form = document.getElementById('productForm');
+
+        if (product) {
+            title.textContent = '✏️ Edit Product';
+            populateProductForm(product);
+        } else {
+            title.textContent = '✨ Add New Product';
+            form.reset();
+            document.getElementById('productId').value = '';
+
+            const imagePreview = document.getElementById('imagePreview');
+            const previewImg = document.getElementById('previewImg');
+            if (imagePreview && previewImg) {
+                imagePreview.style.display = 'none';
+                previewImg.src = '';
+            }
+        }
+
+        modal.style.display = 'flex';
+        modal.classList.add('show');
+        document.body.style.overflow = 'hidden';
+        logSystemEvent('Product modal opened', 'info', 'openProductModal', 'script.js');
+    } catch (error) {
+        console.error('Error opening product modal:', error);
+        logSystemEvent(`Error opening product modal: ${error.message}`, 'error', 'openProductModal', 'script.js');
+    }
+}
+
+function closeProductModal() {
+    try {
+        const modal = document.getElementById('productFormModal');
+        modal.classList.remove('show');
+        document.body.style.overflow = '';
+
+        setTimeout(() => {
+            modal.style.display = 'none';
+        }, 300);
+        logSystemEvent('Product modal closed', 'info', 'closeProductModal', 'script.js');
+    } catch (error) {
+        console.error('Error closing product modal:', error);
+        logSystemEvent(`Error closing product modal: ${error.message}`, 'error', 'closeProductModal', 'script.js');
+    }
+}
+
+function populateProductForm(product) {
+    try {
+        document.getElementById('productId').value = product.id;
+        document.getElementById('productTitle').value = product.title;
+        document.getElementById('productPrice').value = product.price.replace('$', '');
+        document.getElementById('productCategory').value = product.category;
+        document.getElementById('productDescription').value = product.description;
+        document.getElementById('productYoutube').value = product.youtube || '';
+        document.getElementById('productExternal').value = product.external || '';
+        document.getElementById('productDiscount').value = product.discount || 0;
+
+        // Handle image display
+        const productImagePreview = document.getElementById('productImagePreview');
+        const imageUploadArea = document.getElementById('imageUploadArea');
+        
+        if (product.image && productImagePreview) {
+            productImagePreview.src = product.image;
+            productImagePreview.style.display = 'block';
+            
+            if (imageUploadArea && imageUploadArea.querySelector('.upload-text')) {
+                imageUploadArea.querySelector('.upload-text').textContent = 'Current Image - Click to change';
+            }
+        } else {
+            if (productImagePreview) {
+                productImagePreview.style.display = 'none';
+                productImagePreview.src = '';
+            }
+            if (imageUploadArea && imageUploadArea.querySelector('.upload-text')) {
+                imageUploadArea.querySelector('.upload-text').textContent = 'Drag & Drop or Click to Upload Image';
+            }
+        }
+    } catch (error) {
+        console.error('Error populating product form:', error);
+        logSystemEvent(`Error populating product form for product ID ${product?.id}: ${error.message}`, 'error', 'populateProductForm', 'script.js');
+    }
+}
+
+async function handleProductSubmit(e) {
+    e.preventDefault();
+
+    try {
+        const productId = document.getElementById('productId').value;
+        const productImageInput = document.getElementById('productImageInput');
+        const productImagePreview = document.getElementById('productImagePreview');
+        const imageFile = productImageInput.files[0];
+
+        let productImageData = null;
+
+        // Handle image upload
+        if (imageFile) {
+            const reader = new FileReader();
+            reader.onload = async function(event) {
+                productImageData = event.target.result;
+                await processProductData(productImageData);
+            };
+            reader.readAsDataURL(imageFile);
+        } else if (productId && productImagePreview.src && productImagePreview.style.display === 'block') {
+            // If editing and an image is already present, keep it
+            productImageData = productImagePreview.src;
+            await processProductData(productImageData);
+        } else {
+            // No new image and no existing image to keep
+            await processProductData(null);
+        }
+
+        async function processProductData(imageData) {
+            const priceInput = document.getElementById('productPrice').value;
+            const originalPrice = parseFloat(priceInput || 0);
+            const discountPercentage = parseFloat(document.getElementById('productDiscount').value) || 0;
+            
+            // Calculate discounted price
+            const discountAmount = originalPrice * (discountPercentage / 100);
+            const finalPrice = originalPrice - discountAmount;
+            
+            const product = {
+                id: productId || Date.now().toString(),
+                title: document.getElementById('productTitle').value,
+                price: '$' + finalPrice.toFixed(2),
+                originalPrice: discountPercentage > 0 ? '$' + originalPrice.toFixed(2) : '$' + originalPrice.toFixed(2),
+                category: document.getElementById('productCategory').value,
+                description: document.getElementById('productDescription').value,
+                youtube: document.getElementById('productYoutube').value,
+                external: document.getElementById('productExternal').value,
+                discount: discountPercentage,
+                discountAmount: discountAmount,
+                views: productId ? (JSON.parse(localStorage.getItem('products') || '[]').find(p => p.id === productId)?.views || 0) : 0, // Preserve existing views on edit
+                dateCreated: productId ? undefined : new Date().toISOString(),
+                image: imageData || ''
+            };
+
+            // Debug logging for discount calculation
+            console.log('💰 Product Price Calculation Debug:', {
+                inputPrice: priceInput,
+                originalPrice: originalPrice,
+                discountPercentage: discountPercentage,
+                discountAmount: discountAmount,
+                finalPrice: finalPrice,
+                productPrice: product.price,
+                productOriginalPrice: product.originalPrice,
+                hasDiscount: discountPercentage > 0
+            });
+
+            if (productId) {
+                const index = currentProducts.findIndex(p => p.id === productId);
+                if (index !== -1) {
+                    currentProducts[index] = { ...currentProducts[index], ...product };
+                    logSystemEvent(`Product updated: ${product.title} (${productId})`, 'info', 'handleProductSubmit', 'script.js');
+                }
+            } else {
+                currentProducts.unshift(product);
+                logSystemEvent(`Product added: ${product.title}`, 'info', 'handleProductSubmit', 'script.js');
+            }
+
+            // Save to database first - this is now the primary storage
+            try {
+                if (productId) {
+                    const response = await fetch(`/api/products/${productId}`, {
+                        method: 'PUT',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(product)
+                    });
+                    if (!response.ok) throw new Error('Failed to update product in database');
+                } else {
+                    const response = await fetch('/api/products', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(product)
+                    });
+                    if (!response.ok) throw new Error('Failed to create product in database');
+                }
+                console.log('✅ Product saved to database successfully');
+                
+                // Update localStorage as backup
+                localStorage.setItem('products', JSON.stringify(currentProducts));
+                
+            } catch (error) {
+                console.error('❌ Failed to save product to database:', error);
+                // Fallback to localStorage only
+                localStorage.setItem('products', JSON.stringify(currentProducts));
+                showToast('Product saved locally, database sync failed', 'warning');
+            }
+            
+            await loadProductsTable();
+            closeProductModal();
+            showToast(`Product ${productId ? 'updated' : 'added'} successfully!`, 'success');
+        }
+    } catch (error) {
+        console.error('Error handling product submit:', error);
+        logSystemEvent(`Error handling product submit: ${error.message}`, 'error', 'handleProductSubmit', 'script.js');
+        showToast('Failed to save product. Please check your input.', 'error');
+    }
+}
+
+// Enhanced image upload functionality for product form
+function initProductImageUpload() {
+    try {
+        const imageUploadArea = document.getElementById('imageUploadArea');
+        const productImageInput = document.getElementById('productImageInput');
+        const productImagePreview = document.getElementById('productImagePreview');
+
+        if (!imageUploadArea || !productImageInput || !productImagePreview) {
+            console.warn('Image upload elements not found');
+            return;
+        }
+
+        // Handle drag and drop
+        imageUploadArea.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            imageUploadArea.classList.add('drag-over');
+        });
+
+        imageUploadArea.addEventListener('dragleave', () => {
+            imageUploadArea.classList.remove('drag-over');
+        });
+
+        imageUploadArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            imageUploadArea.classList.remove('drag-over');
+            handleImageFile(e.dataTransfer.files[0]);
+        });
+
+        // Handle file input change
+        productImageInput.addEventListener('change', (e) => {
+            handleImageFile(e.target.files[0]);
+        });
+
+        function handleImageFile(file) {
+            if (!file) return;
+
+            if (!file.type.startsWith('image/')) {
+                showToast('Please select an image file.', 'error');
+                return;
+            }
+
+            if (file.size > 10 * 1024 * 1024) { // 10MB limit
+                showToast('Image size must be less than 10MB', 'error');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                productImagePreview.src = e.target.result;
+                productImagePreview.style.display = 'block';
+                
+                const uploadText = imageUploadArea.querySelector('.upload-text');
+                if (uploadText) {
+                    uploadText.textContent = `Image uploaded: ${file.name}`;
+                }
+            };
+            reader.readAsDataURL(file);
+        }
+
+        logSystemEvent('Product image upload functionality initialized', 'info', 'initProductImageUpload', 'script.js');
+    } catch (error) {
+        console.error('Error initializing product image upload:', error);
+        logSystemEvent(`Error initializing product image upload: ${error.message}`, 'error', 'initProductImageUpload', 'script.js');
+    }
+}
+
+async function loadProductsFromServer() {
+    try {
+        console.log('🔄 Loading products from global database...');
+        
+        // Load from database API - this is now the primary source
+        try {
+            const response = await fetch('/api/products');
+            if (response.ok) {
+                const serverProducts = await response.json();
+                if (Array.isArray(serverProducts)) {
+                    currentProducts = serverProducts;
+                    // Update localStorage as backup
+                    localStorage.setItem('products', JSON.stringify(currentProducts));
+                    console.log('✅ Loaded from database:', currentProducts.length, 'products');
+                    return currentProducts;
+                }
+            }
+        } catch (serverError) {
+            console.log('⚠️ Database connection failed, checking localStorage backup:', serverError.message);
+        }
+        
+        // Fallback to localStorage only if database is unavailable
+        const localProducts = JSON.parse(localStorage.getItem('products') || '[]');
+        currentProducts = localProducts;
+        console.log('📦 Using localStorage backup:', currentProducts.length, 'products');
+        
+    } catch (error) {
+        console.error('❌ Error in loadProductsFromServer:', error);
+        currentProducts = JSON.parse(localStorage.getItem('products') || '[]');
+    }
+    return currentProducts;
+}
+
+async function loadProductsTable() {
+    try {
+        const tableBody = document.getElementById('productsTableBody');
+        if (!tableBody) return;
+
+        // Show loading state
+        tableBody.innerHTML = `
+            <tr>
+                <td colspan="6" style="text-align: center; padding: 2rem; color: #666;">
+                    <div style="font-size: 2rem; margin-bottom: 1rem;">⏳</div>
+                    <div>Loading products...</div>
+                </td>
+            </tr>
+        `;
+
+        // Load products from server
+        await loadProductsFromServer();
+        
+        tableBody.innerHTML = '';
+
+        if (currentProducts.length === 0) {
+            tableBody.innerHTML = `
+                <tr>
+                    <td colspan="6" style="text-align: center; padding: 2rem; color: #666;">
+                        <div style="font-size: 3rem; margin-bottom: 1rem;">📦</div>
+                        <div style="font-size: 1.1rem; margin-bottom: 0.5rem;">No products found</div>
+                        <div style="font-size: 0.9rem;">Click "Add Product" to create your first product</div>
+                    </td>
+                </tr>
+            `;
+            return;
+        }
+
+        currentProducts.forEach(product => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        <div style="width: 40px; height: 40px; border-radius: 6px; overflow: hidden; background: #333; display: flex; align-items: center; justify-content: center;">
+                            ${product.image ? 
+                                `<img src="${product.image}" alt="${product.title}" style="width: 100%; height: 100%; object-fit: cover;">` : 
+                                '<span style="font-size: 1.2rem;">📦</span>'
+                            }
+                        </div>
+                        <div>
+                            <div style="font-weight: 600; color: #fff; margin-bottom: 0.25rem;">${product.title || 'Untitled'}</div>
+                            <div style="font-size: 0.8rem; color: #666;">ID: ${product.id}</div>
+                        </div>
+                    </div>
+                </td>
+                <td>
+                    <span style="background: rgba(255, 215, 0, 0.2); color: #ffd700; padding: 0.25rem 0.5rem; border-radius: 12px; font-size: 0.8rem; font-weight: 500;">
+                        ${getCategoryDisplayName(product.category) || 'Uncategorized'}
+                    </span>
+                </td>
+                <td style="font-weight: 600; color: #4CAF50; font-family: monospace;">${product.price || '$0.00'}</td>
+                <td>
+                    <span class="status-badge ${product.featured ? 'featured' : 'draft'}" style="padding: 0.25rem 0.75rem; border-radius: 12px; font-size: 0.8rem; font-weight: 600;">
+                        ${product.featured ? '⭐ Featured' : '📝 Draft'}
+                    </span>
+                </td>
+                <td style="font-family: monospace; color: #666;">${product.views || 0}</td>
+                <td>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button onclick="editProduct('${product.id}')" style="background: rgba(255, 215, 0, 0.2); border: 1px solid rgba(255, 215, 0, 0.3); color: #ffd700; padding: 0.5rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem;" title="Edit">✏️</button>
+                        <button onclick="deleteProduct('${product.id}')" style="background: rgba(255, 107, 107, 0.2); border: 1px solid rgba(255, 107, 107, 0.3); color: #ff6b6b; padding: 0.5rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem;" title="Delete">🗑️</button>
+                    </div>
+                </td>
+            `;
+            tableBody.appendChild(row);
+        });
+
+        // Update counts
+        updateNavigationCounts();
+    } catch (error) {
+        console.error('Error loading products table:', error);
+        logSystemEvent(`Error loading products table: ${error.message}`, 'error', 'loadProductsTable', 'script.js');
+    }
+}
+
+function editProduct(productId) {
+    const product = currentProducts.find(p => p.id === productId);
+    if (product) {
+        openProductModal(product);
+    } else {
+        logSystemEvent(`Attempted to edit non-existent product ID: ${productId}`, 'warning', 'editProduct', 'script.js');
+    }
+}
+
+async function deleteProduct(productId) {
+    if (confirm('Are you sure you want to delete this product?')) {
+        try {
+            // Delete from database first - primary storage
+            try {
+                const response = await fetch(`/api/products/${productId}`, {
+                    method: 'DELETE'
+                });
+                if (!response.ok) throw new Error('Failed to delete from database');
+                console.log('✅ Product deleted from database successfully');
+            } catch (error) {
+                console.error('❌ Failed to delete product from database:', error);
+                showToast('Failed to delete from database, removing locally only', 'warning');
+            }
+            
+            // Update local arrays
+            const initialLength = currentProducts.length;
+            currentProducts = currentProducts.filter(p => p.id !== productId);
+            
+            if (currentProducts.length < initialLength) {
+                // Update localStorage as backup
+                localStorage.setItem('products', JSON.stringify(currentProducts));
+                
+                await loadProductsTable();
+                showToast('Product deleted successfully!', 'success');
+                logSystemEvent(`Product deleted: ${productId}`, 'info', 'deleteProduct', 'script.js');
+            } else {
+                showToast('Product not found for deletion.', 'warning');
+                logSystemEvent(`Attempted to delete non-existent product ID: ${productId}`, 'warning', 'deleteProduct', 'script.js');
+            }
+        } catch (error) {
+            console.error('Error deleting product:', error);
+            logSystemEvent(`Error deleting product ID ${productId}: ${error.message}`, 'error', 'deleteProduct', 'script.js');
+            showToast('Failed to delete product.', 'error');
+        }
+    }
+}
+
+// Image upload functionality
+function initImageUpload() {
+    try {
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('productImage');
+        const imagePreview = document.getElementById('imagePreview');
+        const previewImg = document.getElementById('previewImg');
+        const removeBtn = document.getElementById('removeImageBtn');
+
+        if (!uploadZone || !fileInput) return;
+
+        uploadZone.addEventListener('click', () => fileInput.click());
+
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('drag-over');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('drag-over');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('drag-over');
+            handleImageFiles(e.dataTransfer.files);
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            handleImageFiles(e.target.files);
+        });
+
+        if (removeBtn) {
+            removeBtn.addEventListener('click', () => {
+                if (imagePreview && previewImg) {
+                    imagePreview.style.display = 'none';
+                    previewImg.src = '';
+                }
+                fileInput.value = '';
+                logSystemEvent('Image removed from upload preview', 'info', 'initImageUpload', 'script.js');
+            });
+        }
+    } catch (error) {
+        console.error('Error initializing image upload:', error);
+        logSystemEvent(`Error initializing image upload: ${error.message}`, 'error', 'initImageUpload', 'script.js');
+    }
+}
+
+function handleImageFiles(files) {
+    try {
+        const file = files[0];
+        if (!file || !file.type.startsWith('image/')) {
+            alert('Please select an image file.');
+            return;
+        }
+
+        if (file.size > 10 * 1024 * 1024) {
+            alert('File size must be less than 10MB');
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const previewImg = document.getElementById('previewImg');
+            const imagePreview = document.getElementById('imagePreview');
+            if (previewImg && imagePreview) {
+                previewImg.src = e.target.result;
+                imagePreview.style.display = 'block';
+                logSystemEvent(`Image file loaded: ${file.name}`, 'info', 'handleImageFiles', 'script.js');
+            }
+        };
+        reader.readAsDataURL(file);
+    } catch (error) {
+        console.error('Error handling image file:', error);
+        logSystemEvent(`Error handling image file ${files[0]?.name}: ${error.message}`, 'error', 'handleImageFiles', 'script.js');
+        alert('An error occurred while processing the image.');
+    }
+}
+
+// Featured toggle functionality
+function initFeaturedToggle() {
+    try {
+        const toggle = document.getElementById('featuredToggle');
+        const checkbox = document.getElementById('productFeatured');
+
+        if (!toggle || !checkbox) return;
+
+        toggle.addEventListener('click', () => {
+            checkbox.checked = !checkbox.checked;
+            toggle.classList.toggle('active', checkbox.checked);
+            logSystemEvent(`Featured toggle state changed to ${checkbox.checked}`, 'info', 'initFeaturedToggle', 'script.js');
+        });
+    } catch (error) {
+        console.error('Error initializing featured toggle:', error);
+        logSystemEvent(`Error initializing featured toggle: ${error.message}`, 'error', 'initFeaturedToggle', 'script.js');
+    }
+}
+
+// REAL Analytics functionality
+async function loadAnalytics() {
+    try {
+        await updateAnalyticsMetrics();
+        initCharts();
+        logSystemEvent('Analytics loaded', 'info', 'loadAnalytics', 'script.js');
+    } catch (error) {
+        console.error('Error loading analytics:', error);
+        logSystemEvent(`Error loading analytics: ${error.message}`, 'error', 'loadAnalytics', 'script.js');
+    }
+}
+
+// NEW Analytics System - Based on User Requirements
+function trackProductView(productId, userEmail) {
+    try {
+        if (!userEmail || !productId) return;
+        
+        // Get view tracking data with user cooldowns
+        const viewTracking = JSON.parse(localStorage.getItem('analyticsViewTracking') || '{}');
+        const userCooldowns = JSON.parse(localStorage.getItem('analyticsUserCooldowns') || '{}');
+        
+        const now = Date.now();
+        const cooldownKey = `${userEmail}_${productId}`;
+        
+        // Check 6-second cooldown
+        if (userCooldowns[cooldownKey] && (now - userCooldowns[cooldownKey]) < 6000) {
+            console.log('⏰ View tracking cooldown active for user:', userEmail);
+            return;
+        }
+        
+        // Track the view
+        if (!viewTracking[productId]) {
+            viewTracking[productId] = { count: 0, lastView: now };
+        }
+        viewTracking[productId].count += 1;
+        viewTracking[productId].lastView = now;
+        
+        // Set cooldown for this user
+        userCooldowns[cooldownKey] = now;
+        
+        // Save tracking data
+        localStorage.setItem('analyticsViewTracking', JSON.stringify(viewTracking));
+        localStorage.setItem('analyticsUserCooldowns', JSON.stringify(userCooldowns));
+        
+        console.log(`👁️ View tracked for product ${productId} by ${userEmail}. Total views: ${viewTracking[productId].count}`);
+        
+        // Update analytics immediately
+        setTimeout(updateAnalyticsMetrics, 100);
+        
+    } catch (error) {
+        console.error('Error tracking product view:', error);
+    }
+}
+
+function trackSuccessfulPurchase(finalTotal, purchaseData) {
+    try {
+        // Only track revenue from successful PayPal purchases
+        const analyticsRevenue = JSON.parse(localStorage.getItem('analyticsRevenue') || '[]');
+        const analyticsOrders = JSON.parse(localStorage.getItem('analyticsOrders') || '[]');
+        
+        const revenueRecord = {
+            amount: finalTotal,
+            date: new Date().toISOString(),
+            paypalSuccess: true,
+            id: Date.now()
+        };
+        
+        const orderRecord = {
+            orderId: purchaseData.id || Date.now(),
+            date: new Date().toISOString(),
+            total: finalTotal,
+            items: purchaseData.items || [],
+            paypalSuccess: true
+        };
+        
+        analyticsRevenue.push(revenueRecord);
+        analyticsOrders.push(orderRecord);
+        
+        localStorage.setItem('analyticsRevenue', JSON.stringify(analyticsRevenue));
+        localStorage.setItem('analyticsOrders', JSON.stringify(analyticsOrders));
+        
+        console.log(`💰 Revenue tracked: $${finalTotal} from successful PayPal purchase`);
+        
+        // Update analytics immediately
+        setTimeout(updateAnalyticsMetrics, 100);
+        
+    } catch (error) {
+        console.error('Error tracking successful purchase:', error);
+    }
+}
+
+async function updateAnalyticsMetrics() {
+    try {
+        console.log('📊 Updating analytics with new system...');
+        
+        // Get analytics data from new tracking system
+        const viewTracking = JSON.parse(localStorage.getItem('analyticsViewTracking') || '{}');
+        const analyticsRevenue = JSON.parse(localStorage.getItem('analyticsRevenue') || '[]');
+        const analyticsOrders = JSON.parse(localStorage.getItem('analyticsOrders') || '[]');
+        
+        // Calculate metrics based on new requirements
+        const totalViews = Object.values(viewTracking).reduce((sum, data) => sum + (data.count || 0), 0);
+        const totalOrders = analyticsOrders.filter(order => order.paypalSuccess).length;
+        const totalRevenue = analyticsRevenue
+            .filter(revenue => revenue.paypalSuccess)
+            .reduce((sum, revenue) => sum + (revenue.amount || 0), 0);
+        const conversionRate = totalViews > 0 ? ((totalOrders / totalViews) * 100).toFixed(2) : '0.00';
+        
+        console.log('📈 Analytics Data:', {
+            totalViews,
+            totalOrders,
+            totalRevenue,
+            conversionRate
+        });
+
+        // Update UI elements with new data
+        const viewsElement = document.querySelector('.stats-card:nth-child(2) .stats-number') ||
+                          document.querySelector('[data-metric="views"] .stats-number');
+        const ordersElement = document.querySelector('.stats-card:nth-child(3) .stats-number') ||
+                            document.querySelector('[data-metric="orders"] .stats-number');
+        const revenueElement = document.querySelector('.stats-card:nth-child(1) .stats-number') ||
+                             document.querySelector('[data-metric="revenue"] .stats-number');
+        const conversionElement = document.querySelector('.stats-card:nth-child(4) .stats-number') ||
+                                document.querySelector('[data-metric="conversion"] .stats-number');
+
+        if (revenueElement) revenueElement.textContent = `$${totalRevenue.toFixed(2)}`;
+        if (viewsElement) viewsElement.textContent = totalViews.toLocaleString();
+        if (ordersElement) ordersElement.textContent = totalOrders.toLocaleString();
+        if (conversionElement) conversionElement.textContent = `${conversionRate}%`;
+        
+        // Update percentage changes (show positive growth)
+        updateAnalyticsPercentages(totalViews, totalOrders, totalRevenue, conversionRate);
+        
+    } catch (error) {
+        console.error('Error updating analytics metrics:', error);
+        logSystemEvent(`Error updating analytics metrics: ${error.message}`, 'error', 'updateAnalyticsMetrics', 'script.js');
+    }
+}
+
+function updateAnalyticsPercentages(views, orders, revenue, conversion) {
+    try {
+        // Update percentage indicators
+        const viewsPercentage = document.querySelector('.stats-card:nth-child(2) .stats-change') ||
+                              document.querySelector('[data-metric="views"] .stats-change');
+        const ordersPercentage = document.querySelector('.stats-card:nth-child(3) .stats-change') ||
+                               document.querySelector('[data-metric="orders"] .stats-change');
+        const revenuePercentage = document.querySelector('.stats-card:nth-child(1) .stats-change') ||
+                                document.querySelector('[data-metric="revenue"] .stats-change');
+        const conversionPercentage = document.querySelector('.stats-card:nth-child(4) .stats-change') ||
+                                   document.querySelector('[data-metric="conversion"] .stats-change');
+
+        if (revenuePercentage) {
+            revenuePercentage.textContent = revenue > 0 ? '+100%' : '+0%';
+            revenuePercentage.style.color = '#4CAF50';
+        }
+        if (viewsPercentage) {
+            viewsPercentage.textContent = views > 0 ? '+100%' : '+0%';
+            viewsPercentage.style.color = '#4CAF50';
+        }
+        if (ordersPercentage) {
+            ordersPercentage.textContent = orders > 0 ? '+100%' : '+0%';
+            ordersPercentage.style.color = '#4CAF50';
+        }
+        if (conversionPercentage) {
+            conversionPercentage.textContent = conversion > 0 ? '+100%' : '+0%';
+            conversionPercentage.style.color = '#4CAF50';
+        }
+    } catch (error) {
+        console.error('Error updating analytics percentages:', error);
+    }
+}
+
+function initCharts() {
+    try {
+        const salesCtx = document.getElementById('salesChart');
+        if (salesCtx) {
+            const last6Months = [];
+            const salesData = [];
+            const currentDate = new Date();
+
+            for (let i = 5; i >= 0; i--) {
+                const month = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
+                const monthName = month.toLocaleString('default', { month: 'short' });
+                last6Months.push(monthName);
+
+                const monthSales = purchases.filter(purchase => {
+                    const purchaseDate = new Date(purchase.date);
+                    return purchaseDate.getMonth() === month.getMonth() && 
+                           purchaseDate.getFullYear() === month.getFullYear();
+                }).length;
+
+                salesData.push(monthSales);
+            }
+
+            new Chart(salesCtx, {
+                type: 'line',
+                data: {
+                    labels: last6Months,
+                    datasets: [{
+                        label: 'Sales',
+                        data: salesData,
+                        borderColor: '#ffd700',
+                        backgroundColor: 'rgba(255, 215, 0, 0.1)',
+                        tension: 0.4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            labels: { color: '#fff' }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            ticks: { color: '#fff' },
+                            grid: { color: '#333' }
+                        },
+                        x: {
+                            ticks: { color: '#fff' },
+                            grid: { color: '#333' }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Performance Chart with REAL category data
+        const performanceCtx = document.getElementById('performanceChart');
+        if (performanceCtx) {
+            const products = JSON.parse(localStorage.getItem('products') || '[]');
+            const categoryData = {};
+            products.forEach(product => {
+                const category = product.category || 'Other';
+                categoryData[category] = (categoryData[category] || 0) + 1;
+            });
+
+            const labels = Object.keys(categoryData);
+            const data = Object.values(categoryData);
+            const colors = ['#ffd700', '#ff6b6b', '#4ecdc4', '#45b7d1', '#96ceb4', '#feca57'];
+
+            new Chart(performanceCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: labels.length > 0 ? labels : ['No Products'],
+                    datasets: [{
+                        data: data.length > 0 ? data : [1],
+                        backgroundColor: colors
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            labels: { color: '#fff' }
+                        }
+                    }
+                }
+            });
+        }
+    } catch (error) {
+        console.error('Error initializing charts:', error);
+        logSystemEvent(`Error initializing charts: ${error.message}`, 'error', 'initCharts', 'script.js');
+    }
+}
+
+// REAL Users functionality
+function loadUsersData() {
+    try {
+        const tableBody = document.getElementById('usersTableBody');
+        if (!tableBody) return;
+
+        let users = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+
+        if (currentUser && !users.find(u => u.email === currentUser.email)) {
+            users.push({
+                ...currentUser,
+                joinDate: currentUser.joinDate || new Date().toISOString(),
+                ipAddress: 'Current Session',
+                qualityPoints: 0,
+                totalPurchases: 0,
+                totalSpent: 0,
+                lastActive: new Date().toISOString()
+            });
+            localStorage.setItem('registeredUsers', JSON.stringify(users));
+        }
+
+        updateUserStats(users);
+        tableBody.innerHTML = '';
+
+        if (users.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="8" style="text-align: center; color: #666;">No users found</td></tr>';
+            return;
+        }
+
+        users.forEach(user => {
+            const isActive = isUserActive(user);
+            const isPremium = user.isPremium || false;
+            const qualityPoints = user.qualityPoints || 0;
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${user.email}</td>
+                <td>${user.ipAddress || 'N/A'}</td>
+                <td>${new Date(user.joinDate || Date.now()).toLocaleDateString()}</td>
+                <td>${user.totalPurchases || 0}</td>
+                <td>$${(user.totalSpent || 0).toFixed(2)}</td>
+                <td>
+                    <span class="status-badge ${isPremium ? 'premium' : 'regular'}">${isPremium ? '👑 Premium' : '🔘 Regular'}</span>
+                    <button onclick="toggleUserPremium('${user.email}')" class="premium-toggle-btn">${isPremium ? 'Remove' : 'Grant'}</button>
+                </td>
+                <td>${qualityPoints.toFixed(1)} QP</td>
+                <td>
+                    <span class="status-badge ${isActive ? 'active' : 'inactive'}">${isActive ? '🟢 Active' : '🔴 Inactive'}</span>
+                    <button onclick="banUser('${user.email}')" class="ban-btn">Ban</button>
+                </td>
+            `;
+            tableBody.appendChild(row);
+        });
+        logSystemEvent(`Loaded ${users.length} users`, 'info', 'loadUsersData', 'script.js');
+    } catch (error) {
+        console.error('Error loading users data:', error);
+        logSystemEvent(`Error loading users data: ${error.message}`, 'error', 'loadUsersData', 'script.js');
+    }
+}
+
+function toggleUserPremium(email) {
+    try {
+        const users = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+        const userIndex = users.findIndex(u => u.email === email);
+
+        if (userIndex !== -1) {
+            const currentStatus = users[userIndex].isPremium || false;
+            users[userIndex].isPremium = !currentStatus;
+            users[userIndex].premiumStartDate = !currentStatus ? new Date().toISOString() : null;
+
+            localStorage.setItem('registeredUsers', JSON.stringify(users));
+            loadUsersData();
+
+            showToast(
+                `User ${email} ${!currentStatus ? 'granted' : 'removed from'} Premium subscription`,
+                'success'
+            );
+            logSystemEvent(`User ${email} premium status toggled to ${!currentStatus}`, 'info', 'toggleUserPremium', 'script.js');
+
+            // Update current user if it matches
+            if (currentUser && currentUser.email === email) {
+                updateAuthUI();
+            }
+        } else {
+            logSystemEvent(`Attempted to toggle premium for non-existent user: ${email}`, 'warning', 'toggleUserPremium', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error toggling user premium:', error);
+        logSystemEvent(`Error toggling premium for user ${email}: ${error.message}`, 'error', 'toggleUserPremium', 'script.js');
+        showToast('Failed to update user premium status.', 'error');
+    }
+}
+
+function updateUserStats(users) {
+    try {
+        const totalUsersElement = document.querySelector('.users-stats .stat-card:nth-child(1) .metric');
+        const activeUsersElement = document.querySelector('.users-stats .stat-card:nth-child(2) .metric');
+        const newSignupsElement = document.querySelector('.users-stats .stat-card:nth-child(3) .metric');
+
+        const activeUsers = users.filter(user => isUserActive(user)).length;
+        const today = new Date().toDateString();
+        const newSignupsToday = users.filter(user => 
+            new Date(user.joinDate || Date.now()).toDateString() === today
+        ).length;
+
+        if (totalUsersElement) totalUsersElement.textContent = users.length;
+        if (activeUsersElement) activeUsersElement.textContent = activeUsers;
+        if (newSignupsElement) newSignupsElement.textContent = newSignupsToday;
+    } catch (error) {
+        console.error('Error updating user stats:', error);
+        logSystemEvent(`Error updating user stats: ${error.message}`, 'error', 'updateUserStats', 'script.js');
+    }
+}
+
+function isUserActive(user) {
+    if (!user.lastActive) return false;
+    const lastActiveTime = new Date(user.lastActive);
+    const now = new Date();
+    const timeDiff = now - lastActiveTime;
+    return timeDiff < 30 * 60 * 1000; // Active if last seen within 30 minutes
+}
+
+// Update user activity when they sign in
+function updateUserActivity(user) {
+    try {
+        let users = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+        const existingUserIndex = users.findIndex(u => u.email === user.email);
+
+        if (existingUserIndex !== -1) {
+            users[existingUserIndex].lastActive = new Date().toISOString();
+        } else {
+            users.push({
+                ...user,
+                joinDate: new Date().toISOString(),
+                lastActive: new Date().toISOString(),
+                qualityPoints: 0,
+                totalPurchases: 0,
+                totalSpent: 0
+            });
+        }
+
+        localStorage.setItem('registeredUsers', JSON.stringify(users));
+    } catch (error) {
+        console.error('Error updating user activity:', error);
+        logSystemEvent(`Error updating activity for user ${user?.email}: ${error.message}`, 'error', 'updateUserActivity', 'script.js');
+    }
+}
+
+// REAL Customer data functionality
+function loadCustomersData() {
+    try {
+        const userDetailsGrid = document.getElementById('userDetailsGrid');
+        if (!userDetailsGrid) return;
+
+        const users = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+
+        userDetailsGrid.innerHTML = '';
+
+        if (users.length === 0) {
+            userDetailsGrid.innerHTML = '<div class="no-users-message">No users found</div>';
+            return;
+        }
+
+        users.forEach(user => {
+            const userCard = document.createElement('div');
+            userCard.className = 'user-detail-card';
+            userCard.onclick = () => openUserDetailModal(user);
+
+            const isActive = isUserActive(user);
+            const totalRevenue = parseFloat(user.totalSpent) || 0;
+            const totalOrders = user.totalPurchases || 0;
+            const averageSpending = totalOrders > 0 ? (totalRevenue / totalOrders).toFixed(2) : '0.00';
+
+            userCard.innerHTML = `
+                <div class="user-card-header">
+                    <div class="user-avatar">
+                        ${user.picture ? `<img src="${user.picture}" alt="${user.name}">` : '👤'}
+                    </div>
+                    <div class="user-info">
+                        <h3>${user.name || user.given_name || 'Unknown'}</h3>
+                        <p>${user.email}</p>
+                        <span class="status-badge ${isActive ? 'active' : 'inactive'}">${isActive ? '🟢 Active' : '🔴 Inactive'}</span>
+                    </div>
+                </div>
+                <div class="user-stats">
+                    <div class="user-stat">
+                        <span class="stat-label">Total Orders:</span>
+                        <span class="stat-value">${totalOrders}</span>
+                    </div>
+                    <div class="user-stat">
+                        <span class="stat-label">Total Revenue:</span>
+                        <span class="stat-value">$${totalRevenue.toFixed(2)}</span>
+                    </div>
+                    <div class="user-stat">
+                        <span class="stat-label">Avg. Spending:</span>
+                        <span class="stat-value">$${averageSpending}</span>
+                    </div>
+                    <div class="user-stat">
+                        <span class="stat-label">Quality Points:</span>
+                        <span class="stat-value">${(user.qualityPoints || 0).toFixed(1)} QP</span>
+                    </div>
+                </div>
+            `;
+
+            userDetailsGrid.appendChild(userCard);
+        });
+        logSystemEvent(`Loaded ${users.length} customer details`, 'info', 'loadCustomersData', 'script.js');
+    } catch (error) {
+        console.error('Error loading customer data:', error);
+        logSystemEvent(`Error loading customer data: ${error.message}`, 'error', 'loadCustomersData', 'script.js');
+    }
+}
+
+function openUserDetailModal(user) {
+    try {
+        const modal = document.getElementById('userDetailModal');
+        const content = document.getElementById('userDetailContent');
+
+        if (!modal || !content) return;
+
+        const isActive = isUserActive(user);
+        const totalRevenue = parseFloat(user.totalSpent) || 0;
+        const totalOrders = user.totalPurchases || 0;
+        const averageSpending = totalOrders > 0 ? (totalRevenue / totalOrders).toFixed(2) : '0.00';
+        const joinDate = new Date(user.joinDate || Date.now()).toLocaleDateString();
+        const lastActive = user.lastActive ? new Date(user.lastActive).toLocaleString() : 'Never';
+        const qualityPoints = user.qualityPoints || 0;
+
+        content.innerHTML = `
+            <div class="user-detail-header">
+                <div class="user-detail-avatar">
+                    ${user.picture ? `<img src="${user.picture}" alt="${user.name}">` : '👤'}
+                </div>
+                <div class="user-detail-info">
+                    <h2>${user.name || user.given_name || 'Unknown User'}</h2>
+                    <p class="user-email">${user.email}</p>
+                    <span class="status-badge ${isActive ? 'active' : 'inactive'}">${isActive ? '🟢 Currently Active' : '🔴 Inactive'}</span>
+                    ${user.isPremium ? '<span class="premium-badge">👑 PREMIUM</span>' : ''}
+                </div>
+            </div>
+
+            <div class="user-detail-stats">
+                <div class="detail-stat-card">
+                    <h3>📊 Statistics</h3>
+                    <div class="stat-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Total Orders:</span>
+                            <span class="stat-value">${totalOrders}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Total Revenue:</span>
+                            <span class="stat-value">$${totalRevenue.toFixed(2)}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Avg. Spending:</span>
+                            <span class="stat-value">$${averageSpending}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Quality Points:</span>
+                            <span class="stat-value">${qualityPoints.toFixed(1)} QP</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Join Date:</span>
+                            <span class="stat-value">${joinDate}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">Last Active:</span>
+                            <span class="stat-value">${lastActive}</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="detail-actions">
+                    <button onclick="banUser('${user.email}'); closeUserDetailModal();" class="ban-btn">🚫 Ban User</button>
+                    <button onclick="exportUserData('${user.email}')" class="export-btn">📤 Export Data</button>
+                    <button onclick="toggleUserPremium('${user.email}'); closeUserDetailModal();" class="premium-btn">
+                        ${user.isPremium ? '❌ Remove Premium' : '👑 Grant Premium'}
+                    </button>
+                </div>
+            </div>
+        `;
+
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+        logSystemEvent(`Opened detail modal for user ${user.email}`, 'info', 'openUserDetailModal', 'script.js');
+    } catch (error) {
+        console.error('Error opening user detail modal:', error);
+        logSystemEvent(`Error opening user detail modal for ${user?.email}: ${error.message}`, 'error', 'openUserDetailModal', 'script.js');
+    }
+}
+
+function closeUserDetailModal() {
+    try {
+        const modal = document.getElementById('userDetailModal');
+        if (modal) {
+            modal.style.display = 'none';
+            document.body.style.overflow = '';
+        }
+    } catch (error) {
+        console.error('Error closing user detail modal:', error);
+        logSystemEvent(`Error closing user detail modal: ${error.message}`, 'error', 'closeUserDetailModal', 'script.js');
+    }
+}
+
+function exportUserData(email) {
+    try {
+        const users = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+        const user = users.find(u => u.email === email);
+        if (user) {
+            const dataStr = JSON.stringify(user, null, 2);
+            const dataBlob = new Blob([dataStr], {type: 'application/json'});
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `user_${email.replace('@', '_')}_data.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+            showToast('User data exported successfully!', 'success');
+            logSystemEvent(`User data exported for ${email}`, 'info', 'exportUserData', 'script.js');
+        } else {
+            showToast('User not found for export.', 'warning');
+            logSystemEvent(`Attempted to export data for non-existent user: ${email}`, 'warning', 'exportUserData', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error exporting user data:', error);
+        logSystemEvent(`Error exporting user data for ${email}: ${error.message}`, 'error', 'exportUserData', 'script.js');
+        showToast('Failed to export user data.', 'error');
+    }
+}
+
+// Contact submissions
+function loadContactSubmissions() {
+    try {
+        const tableBody = document.getElementById('contactsTableBody');
+        if (!tableBody) return;
+
+        const contacts = JSON.parse(localStorage.getItem('contactSubmissions') || '[]');
+
+        tableBody.innerHTML = '';
+
+        if (contacts.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">No contact submissions found</td></tr>';
+            return;
+        }
+
+        contacts.forEach(contact => {
+            const row = document.createElement('tr');
+            row.className = contact.status === 'unread' ? 'unread-contact' : '';
+            row.innerHTML = `
+                <td>${new Date(contact.date).toLocaleDateString()}</td>
+                <td>${contact.from_name}</td>
+                <td>${contact.from_email}</td>
+                <td class="message-cell">${contact.message.substring(0, 50)}${contact.message.length > 50 ? '...' : ''}</td>
+                <td><span class="status-badge ${contact.status}">${contact.status === 'unread' ? '🔴 Unread' : '✅ Read'}</span></td>
+                <td>
+                    <button onclick="viewContact('${contact.id}')" class="view-btn">👁️ View</button>
+                    <button onclick="markAsRead('${contact.id}')" class="mark-read-btn">✅ Mark Read</button>
+                    <button onclick="deleteContact('${contact.id}')" class="delete-btn">🗑️ Delete</button>
+                </td>
+            `;
+            tableBody.appendChild(row);
+        });
+        logSystemEvent(`Loaded ${contacts.length} contact submissions`, 'info', 'loadContactSubmissions', 'script.js');
+    } catch (error) {
+        console.error('Error loading contact submissions:', error);
+        logSystemEvent(`Error loading contact submissions: ${error.message}`, 'error', 'loadContactSubmissions', 'script.js');
+    }
+}
+
+function markAsRead(contactId) {
+    try {
+        let contacts = JSON.parse(localStorage.getItem('contactSubmissions') || '[]');
+        const contactIndex = contacts.findIndex(c => c.id == contactId);
+        if (contactIndex !== -1) {
+            contacts[contactIndex].status = 'read';
+            localStorage.setItem('contactSubmissions', JSON.stringify(contacts));
+            loadContactSubmissions();
+            showToast('Contact marked as read!', 'success');
+            logSystemEvent(`Contact submission ${contactId} marked as read`, 'info', 'markAsRead', 'script.js');
+        } else {
+            showToast('Contact not found.', 'warning');
+            logSystemEvent(`Attempted to mark non-existent contact ${contactId} as read`, 'warning', 'markAsRead', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error marking contact as read:', error);
+        logSystemEvent(`Error marking contact ${contactId} as read: ${error.message}`, 'error', 'markAsRead', 'script.js');
+        showToast('Failed to mark contact as read.', 'error');
+    }
+}
+
+function clearContacts() {
+    if (confirm('Are you sure you want to clear all contact submissions?')) {
+        try {
+            localStorage.removeItem('contactSubmissions');
+            loadContactSubmissions();
+            showToast('Contact submissions cleared!', 'success');
+            logSystemEvent('All contact submissions cleared', 'info', 'clearContacts', 'script.js');
+        } catch (error) {
+            console.error('Error clearing contacts:', error);
+            logSystemEvent(`Error clearing contacts: ${error.message}`, 'error', 'clearContacts', 'script.js');
+            showToast('Failed to clear contact submissions.', 'error');
+        }
+    }
+}
+
+function viewContact(contactId) {
+    try {
+        const contacts = JSON.parse(localStorage.getItem('contactSubmissions') || '[]');
+        const contact = contacts.find(c => c.id == contactId);
+        if (contact) {
+            alert(`Contact Details:\n\nName: ${contact.from_name}\nEmail: ${contact.from_email}\nDate: ${new Date(contact.date).toLocaleString()}\n\nMessage:\n${contact.message}`);
+            logSystemEvent(`Viewed contact submission ${contactId}`, 'info', 'viewContact', 'script.js');
+        } else {
+            showToast('Contact not found.', 'warning');
+            logSystemEvent(`Attempted to view non-existent contact ${contactId}`, 'warning', 'viewContact', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error viewing contact:', error);
+        logSystemEvent(`Error viewing contact ${contactId}: ${error.message}`, 'error', 'viewContact', 'script.js');
+    }
+}
+
+function deleteContact(contactId) {
+    if (confirm('Are you sure you want to delete this contact submission?')) {
+        try {
+            let contacts = JSON.parse(localStorage.getItem('contactSubmissions') || '[]');
+            const initialLength = contacts.length;
+            contacts = contacts.filter(c => c.id != contactId);
+            if (contacts.length < initialLength) {
+                localStorage.setItem('contactSubmissions', JSON.stringify(contacts));
+                loadContactSubmissions();
+                showToast('Contact submission deleted!', 'success');
+                logSystemEvent(`Contact submission ${contactId} deleted`, 'info', 'deleteContact', 'script.js');
+            } else {
+                showToast('Contact not found for deletion.', 'warning');
+                logSystemEvent(`Attempted to delete non-existent contact ${contactId}`, 'warning', 'deleteContact', 'script.js');
+            }
+        } catch (error) {
+            console.error('Error deleting contact:', error);
+            logSystemEvent(`Error deleting contact ${contactId}: ${error.message}`, 'error', 'deleteContact', 'script.js');
+            showToast('Failed to delete contact submission.', 'error');
+        }
+    }
+}
+
+// Ban Management Functions
+function banUser(email) {
+    try {
+        if (!email || !email.trim()) {
+            alert('Please enter a valid email address');
+            return;
+        }
+
+        const bannedUsers = JSON.parse(localStorage.getItem('bannedUsers') || '[]');
+
+        // Check if user is already banned (handle both formats)
+        const isAlreadyBanned = bannedUsers.some(user => 
+            (typeof user === 'string' && user === email) || 
+            (typeof user === 'object' && user.email === email)
+        );
+
+        if (isAlreadyBanned) {
+            alert('User is already banned');
+            return;
+        }
+
+        const banData = {
+            email: email,
+            ipAddress: 'N/A',
+            reason: 'Admin action',
+            severity: 'medium',
+            expiration: 'Permanent',
+            date: new Date().toISOString()
+        };
+
+        bannedUsers.push(banData);
+        localStorage.setItem('bannedUsers', JSON.stringify(bannedUsers));
+
+        addSecurityEvent(`User ${email} has been banned by admin`, 'warning');
+
+        // Force sign out if currently signed in
+        if (currentUser && currentUser.email === email) {
+            signOut();
+            showToast('You have been banned and signed out', 'error');
+        }
+
+        loadBannedUsers();
+        loadSecurityData();
+        showToast(`User ${email} has been banned`, 'success');
+        logSystemEvent(`User banned: ${email}`, 'info', 'banUser', 'script.js');
+
+        // Ban system disabled
+        // if (window.banSystem) {
+        //     window.banSystem.addSecurityEvent(`Admin banned user: ${email}`);
+        // }
+    } catch (error) {
+        console.error('Error banning user:', error);
+        logSystemEvent(`Error banning user ${email}: ${error.message}`, 'error', 'banUser', 'script.js');
+        showToast('Failed to ban user.', 'error');
+    }
+}
+
+function banIP(ipAddress) {
+    try {
+        if (!ipAddress || !ipAddress.trim()) {
+            alert('Please enter a valid IP address');
+            return;
+        }
+
+        // Basic IP validation
+        const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+        if (!ipRegex.test(ipAddress)) {
+            alert('Please enter a valid IP address format (e.g., 192.168.1.1)');
+            return;
+        }
+
+        const bannedIPs = JSON.parse(localStorage.getItem('bannedIPs') || '[]');
+
+        // Check if IP is already banned (handle both formats)
+        const isAlreadyBanned = bannedIPs.some(ip => 
+            (typeof ip === 'string' && ip === ipAddress) || 
+            (typeof ip === 'object' && ip.ipAddress === ipAddress)
+        );
+
+        if (isAlreadyBanned) {
+            alert('IP address is already banned');
+            return;
+        }
+
+        const banData = {
+            ipAddress: ipAddress,
+            reason: 'Admin action',
+            severity: 'medium',
+            expiration: 'Permanent',
+            date: new Date().toISOString()
+        };
+
+        bannedIPs.push(banData);
+        localStorage.setItem('bannedIPs', JSON.stringify(bannedIPs));
+
+        addSecurityEvent(`IP ${ipAddress} has been banned by admin`, 'warning');
+
+        loadBannedIPs();
+        loadSecurityData();
+        showToast(`IP ${ipAddress} has been banned`, 'success');
+        logSystemEvent(`IP banned: ${ipAddress}`, 'info', 'banIP', 'script.js');
+
+        // Ban system disabled
+        // if (window.banSystem) {
+        //     window.banSystem.addSecurityEvent(`Admin banned IP: ${ipAddress}`);
+        // }
+    } catch (error) {
+        console.error('Error banning IP:', error);
+        logSystemEvent(`Error banning IP ${ipAddress}: ${error.message}`, 'error', 'banIP', 'script.js');
+        showToast('Failed to ban IP address.', 'error');
+    }
+}
+
+function unbanUser(email) {
+    if (confirm(`Are you sure you want to unban ${email}?`)) {
+        try {
+            let bannedUsers = JSON.parse(localStorage.getItem('bannedUsers') || '[]');
+            const initialLength = bannedUsers.length;
+            bannedUsers = bannedUsers.filter(user => {
+                // Handle both formats: direct email string or object with email property
+                return !(
+                    (typeof user === 'string' && user === email) || 
+                    (typeof user === 'object' && user.email === email)
+                );
+            });
+            if (bannedUsers.length < initialLength) {
+                localStorage.setItem('bannedUsers', JSON.stringify(bannedUsers));
+
+                addSecurityEvent(`User ${email} has been unbanned by admin`);
+
+                loadBannedUsers();
+                loadSecurityData();
+                showToast(`User ${email} has been unbanned`, 'success');
+                logSystemEvent(`User unbanned: ${email}`, 'info', 'unbanUser', 'script.js');
+
+                // Ban system disabled
+                // if (window.banSystem) {
+                //     window.banSystem.addSecurityEvent(`Admin unbanned user: ${email}`);
+                // }
+            } else {
+                showToast('User not found in banned list.', 'warning');
+                logSystemEvent(`Attempted to unban non-banned user: ${email}`, 'warning', 'unbanUser', 'script.js');
+            }
+        } catch (error) {
+            console.error('Error unbanning user:', error);
+            logSystemEvent(`Error unbanning user ${email}: ${error.message}`, 'error', 'unbanUser', 'script.js');
+            showToast('Failed to unban user.', 'error');
+        }
+    }
+}
+
+function unbanIP(ipAddress) {
+    if (confirm(`Are you sure you want to unban ${ipAddress}?`)) {
+        try {
+            let bannedIPs = JSON.parse(localStorage.getItem('bannedIPs') || '[]');
+            const initialLength = bannedIPs.length;
+            bannedIPs = bannedIPs.filter(ip => {
+                // Handle both formats: direct IP string or object with ipAddress property
+                return !(
+                    (typeof ip === 'string' && ip === ipAddress) || 
+                    (typeof ip === 'object' && ip.ipAddress === ipAddress)
+                );
+            });
+            if (bannedIPs.length < initialLength) {
+                localStorage.setItem('bannedIPs', JSON.stringify(bannedIPs));
+
+                addSecurityEvent(`IP ${ipAddress} has been unbanned by admin`);
+
+                loadBannedIPs();
+                loadSecurityData();
+                showToast(`IP ${ipAddress} has been unbanned`, 'success');
+                logSystemEvent(`IP unbanned: ${ipAddress}`, 'info', 'unbanIP', 'script.js');
+
+                // Ban system disabled
+                // if (window.banSystem) {
+                //     window.banSystem.addSecurityEvent(`Admin unbanned IP: ${ipAddress}`);
+                // }
+            } else {
+                showToast('IP address not found in banned list.', 'warning');
+                logSystemEvent(`Attempted to unban non-banned IP: ${ipAddress}`, 'warning', 'unbanIP', 'script.js');
+            }
+        } catch (error) {
+            console.error('Error unbanning IP:', error);
+            logSystemEvent(`Error unbanning IP ${ipAddress}: ${error.message}`, 'error', 'unbanIP', 'script.js');
+            showToast('Failed to unban IP address.', 'error');
+        }
+    }
+}
+
+function loadBannedUsers() {
+    try {
+        const tableBody = document.getElementById('bannedUsersTable');
+        if (!tableBody) return;
+
+        const bannedUsers = JSON.parse(localStorage.getItem('bannedUsers') || '[]');
+
+        tableBody.innerHTML = '';
+
+        if (bannedUsers.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: #666;">No banned users</td></tr>';
+            return;
+        }
+
+        bannedUsers.forEach(user => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${user.email}</td>
+                <td>${user.ipAddress}</td>
+                <td>${user.reason}</td>
+                <td class="severity-${user.severity}">${user.severity}</td>
+                <td>${user.expiration}</td>
+                <td>
+                    <button onclick="unbanUser('${user.email}')" class="unban-btn">Unban</button>
+                </td>
+            `;
+            tableBody.appendChild(row);
+        });
+    } catch (error) {
+        console.error('Error loading banned users:', error);
+        logSystemEvent(`Error loading banned users: ${error.message}`, 'error', 'loadBannedUsers', 'script.js');
+    }
+}
+
+function loadBannedIPs() {
+    try {
+        const tableBody = document.getElementById('bannedIPsTable');
+        if (!tableBody) return;
+
+        const bannedIPs = JSON.parse(localStorage.getItem('bannedIPs') || '[]');
+
+        tableBody.innerHTML = '';
+
+        if (bannedIPs.length === 0) {
+            tableBody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: #666;">No banned IPs</td></tr>';
+            return;
+        }
+
+        bannedIPs.forEach(ip => {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td>${ip.ipAddress}</td>
+                <td>${ip.reason}</td>
+                <td class="severity-${ip.severity}">${ip.severity}</td>
+                <td>${ip.expiration}</td>
+                <td>
+                    <button onclick="unbanIP('${ip.ipAddress}')" class="unban-btn">Unban</button>
+                </td>
+            `;
+            tableBody.appendChild(row);
+        });
+    } catch (error) {
+        console.error('Error loading banned IPs:', error);
+        logSystemEvent(`Error loading banned IPs: ${error.message}`, 'error', 'loadBannedIPs', 'script.js');
+    }
+}
+
+function addSecurityEvent(message, severity = 'info') {
+    try {
+        const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+        const event = {
+            message: message,
+            severity: severity,
+            timestamp: new Date().toISOString(),
+            id: Date.now() + Math.random().toString(36).substr(2, 9),
+            ip: window.banSystem?.currentUserIP || 'unknown',
+            userAgent: navigator.userAgent.substring(0, 100),
+            url: window.location.href,
+            sessionId: localStorage.getItem('currentSessionId')
+        };
+
+        securityLog.unshift(event);
+
+        // Keep only last 500 events
+        if (securityLog.length > 500) {
+            securityLog.splice(500);
+        }
+
+        localStorage.setItem('securityLog', JSON.stringify(securityLog));
+
+        if (severity === 'critical') {
+            console.error(`🚨 CRITICAL SECURITY EVENT: ${message}`);
+        } else if (severity === 'warning') {
+            console.warn(`⚠️ SECURITY WARNING: ${message}`);
+        } else {
+            console.log(`🔒 Security Event: ${message}`);
+        }
+    } catch (error) {
+        console.error('Error adding security event:', error);
+        // Fallback log if localStorage fails
+        console.log(`[${new Date().toISOString()}] Security Event (${severity}): ${message}`);
+    }
+}
+
+// Ban system testing functions
+async function testBanSystem() {
+    if (!window.banSystem) {
+        showToast('Ban system not initialized', 'error');
+        return;
+    }
+
+    if (!currentUser) {
+        showToast('No user signed in to test', 'warning');
+        return;
+    }
+
+    try {
+        console.log('🧪 Testing ban system with current user...');
+        const testResult = await window.banSystem.testBanSystem();
+        const status = testResult.overallStatus ? '✅ WORKING' : '❌ ISSUES FOUND';
+        alert(`Ban System Test Results:\n\n${status}\n\nDetails:\n${JSON.stringify(testResult.testResults, null, 2)}`);
+        showToast('Ban system test completed', 'info');
+        logSystemEvent(`Ban system test executed`, 'info', 'testBanSystem', 'script.js');
+    } catch (error) {
+        console.error('Ban system test failed:', error);
+        logSystemEvent(`Ban system test failed: ${error.message}`, 'error', 'testBanSystem', 'script.js');
+        showToast('❌ Ban system test failed', 'error');
+    }
+}
+
+function showBanSystemStatus() {
+    if (!window.banSystem) {
+        alert('Ban system not initialized');
+        return;
+    }
+
+    const bannedUsers = JSON.parse(localStorage.getItem('bannedUsers') || '[]');
+    const bannedIPs = JSON.parse(localStorage.getItem('bannedIPs') || '[]');
+    const sessionNotes = window.banSystem.getSessionNotes();
+
+    const status = `🔒 Ban System Status:
+
+📧 Banned Users: ${bannedUsers.length}
+🌐 Banned IPs: ${bannedIPs.length}
+📝 Active Session Notes: ${sessionNotes.length}
+
+Current User: ${currentUser ? currentUser.email : 'None'}
+System Status: ${window.banSystem ? '✅ Active' : '❌ Inactive'}
+
+Recent Session Notes:
+${sessionNotes.slice(0, 3).map(note => 
+    `• ${note.email} from ${note.ip} (${Math.round((Date.now() - note.timestamp) / 1000)}s ago)`
+).join('\n') || 'None'}`;
+
+    alert(status);
+}
+
+function loadSecurityData() {
+    console.log('🔒 Loading security data...');
+
+    // Ensure security manager is initialized
+    if (!securityManagerInstance) {
+        initializeSecurityManager();
+    }
+
+    try {
+        const bannedUsers = JSON.parse(localStorage.getItem('bannedUsers') || '[]');
+        const bannedIPs = JSON.parse(localStorage.getItem('bannedIPs') || '[]');
+        const registeredUsers = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+        const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+
+        // Update metrics including payment security data
+        const bannedUsersCount = document.getElementById('bannedUsersCount');
+        const bannedIPsCount = document.getElementById('bannedIPsCount');
+        const activeSessionsCount = document.getElementById('activeSessionsCount');
+        const paymentAttemptsCount = document.getElementById('paymentAttemptsCount');
+        const successfulPayments = document.getElementById('successfulPayments');
+        const failedPayments = document.getElementById('failedPayments');
+        const fraudAlerts = document.getElementById('fraudAlerts');
+
+        if (bannedUsersCount) bannedUsersCount.textContent = bannedUsers.length;
+        if (bannedIPsCount) bannedIPsCount.textContent = bannedIPs.length;
+        if (activeSessionsCount) {
+            const activeSessions = registeredUsers.filter(user => isUserActive(user)).length;
+            activeSessionsCount.textContent = Math.max(activeSessions, 1); // At least 1 for current session
+        }
+
+        // Load payment security metrics
+        const paymentAttempts = JSON.parse(localStorage.getItem('paymentAttempts') || '[]');
+        const transactions = JSON.parse(localStorage.getItem('transactions') || '[]');
+
+        if (paymentAttemptsCount) paymentAttemptsCount.textContent = paymentAttempts.length;
+        if (successfulPayments) successfulPayments.textContent = transactions.length;
+        if (failedPayments) {
+            const failed = paymentAttempts.filter(p => p.status === 'failed').length;
+            failedPayments.textContent = failed;
+        }
+        if (fraudAlerts) {
+            const fraudEvents = securityLog.filter(e => e.message.includes('fraud') || e.message.includes('suspicious payment')).length;
+            fraudAlerts.textContent = fraudEvents;
+        }
+
+        // Load security log
+        const securityLogDiv = document.getElementById('securityLog');
+        if (securityLogDiv) {
+            securityLogDiv.innerHTML = '';
+
+            if (securityLog.length === 0) {
+                securityLogDiv.innerHTML = `
+                    <div class="security-event no-events">
+                        <span class="event-time">${new Date().toLocaleString()}</span>
+                        <span class="event-message">🔒 Security monitoring active - No events recorded yet</span>
+                    </div>
+                `;
+            } else {
+                // Show last 15 events
+                securityLog.slice(0, 15).forEach(event => {
+                    const eventDiv = document.createElement('div');
+                    eventDiv.className = `security-event ${event.severity || 'info'}`;
+
+                    const eventIcon = event.severity === 'critical' ? '🚨' : 
+                                    event.severity === 'warning' ? '⚠️' : '🔒';
+
+                    eventDiv.innerHTML = `
+                        <div class="event-header">
+                            <span class="event-icon">${eventIcon}</span>
+                            <span class="event-time">${new Date(event.timestamp).toLocaleString()}</span>
+                        </div>
+                        <span class="event-message">${event.message}</span>
+                    `;
+                    securityLogDiv.appendChild(eventDiv);
+                });
+            }
+        }
+
+        // Add some demo events if none exist
+        if (securityLog.length === 0) {
+            const demoEvents = [
+                'Security system initialized successfully',
+                'Ban system activated and monitoring',
+                'User authentication monitoring started',
+                'IP detection completed - Real IP acquired'
+            ];
+
+            demoEvents.forEach((message, index) => {
+                setTimeout(() => {
+                    addSecurityEvent(message);
+                    if (index === demoEvents.length - 1) {
+                        // Reload security data after adding demo events
+                        setTimeout(() => loadSecurityData(), 500);
+                    }
+                }, index * 100);
+            });
+        }
+
+        console.log('✅ Security data loaded successfully');
+        logSystemEvent('Security data loaded', 'info', 'loadSecurityData', 'script.js');
+    } catch (error) {
+        console.error('Error loading security data:', error);
+        logSystemEvent(`Error loading security data: ${error.message}`, 'error', 'loadSecurityData', 'script.js');
+    }
+}
+
+// System log functions for console tab
+function clearSystemLogs() {
+    try {
+        localStorage.removeItem('systemLogs');
+        loadConsoleTab();
+        showToast('System logs cleared', 'success');
+        logSystemEvent('System logs manually cleared', 'info', 'clearSystemLogs', 'script.js');
+    } catch (error) {
+        console.error('Error clearing system logs:', error);
+        showToast('Failed to clear system logs', 'error');
+    }
+}
+
+function exportSystemLogs() {
+    try {
+        const logs = JSON.parse(localStorage.getItem('systemLogs') || '[]');
+        const logData = logs.map(log => 
+            `[${log.timestamp}] [${log.level.toUpperCase()}] [${log.function}] ${log.message}`
+        ).join('\n');
+
+        const blob = new Blob([logData], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `system_logs_${new Date().toISOString().split('T')[0]}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+
+        showToast('System logs exported successfully', 'success');
+        logSystemEvent('System logs exported', 'info', 'exportSystemLogs', 'script.js');
+    } catch (error) {
+        console.error('Error exporting system logs:', error);
+        showToast('Failed to export system logs', 'error');
+    }
+}
+
+function loadConsoleTab() {
+    try {
+        const consoleContainer = document.getElementById('consoleContainer');
+        const logStats = document.getElementById('logStats');
+
+        if (!consoleContainer) return;
+
+        // Get system logs from localStorage
+        const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+        const systemLogs = JSON.parse(localStorage.getItem('systemLogs') || '[]');
+
+        // Combine all logs
+        const allLogs = [...securityLog, ...systemLogs].sort((a, b) => 
+            new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)
+        );
+
+        // Update log statistics
+        if (logStats) {
+            const errorCount = allLogs.filter(log => log.severity === 'error' || log.level === 'error').length;
+            const warningCount = allLogs.filter(log => log.severity === 'warning' || log.level === 'warning').length;
+            const infoCount = allLogs.filter(log => log.severity === 'info' || log.level === 'info').length;
+
+            logStats.innerHTML = `
+                <div class="log-stat-card">
+                    <h4>📊 Log Statistics</h4>
+                    <div class="stat-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Total Events:</span>
+                            <span class="stat-value">${allLogs.length}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">🔴 Errors:</span>
+                            <span class="stat-value error-count">${errorCount}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">⚠️ Warnings:</span>
+                            <span class="stat-value warning-count">${warningCount}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">ℹ️ Info:</span>
+                            <span class="stat-value info-count">${infoCount}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Clear and populate console container
+        consoleContainer.innerHTML = '';
+
+        if (allLogs.length === 0) {
+            consoleContainer.innerHTML = `
+                <div class="console-message no-logs">
+                    <div class="console-header">
+                        <span class="log-time">${new Date().toLocaleString()}</span>
+                        <span class="log-level info">INFO</span>
+                    </div>
+                    <div class="log-message">🖥️ System Console initialized - No logs found</div>
+                </div>
+            `;
+            return;
+        }
+
+        // Display logs (limit to last 100 for performance)
+        allLogs.slice(0, 100).forEach(log => {
+            const logEntry = document.createElement('div');
+            logEntry.className = `console-message ${log.severity || log.level || 'info'}`;
+
+            const timestamp = new Date(log.timestamp || log.date || Date.now());
+            const levelIcon = getLevelIcon(log.severity || log.level || 'info');
+            const functionInfo = log.function && log.file ? `[${log.function}@${log.file}]` : '';
+
+            logEntry.innerHTML = `
+                <div class="console-header">
+                    <span class="log-time">${timestamp.toLocaleString()}</span>
+                    <span class="log-level ${log.severity || log.level || 'info'}">${levelIcon} ${(log.severity || log.level || 'info').toUpperCase()}</span>
+                    ${functionInfo ? `<span class="log-function">${functionInfo}</span>` : ''}
+                </div>
+                <div class="log-message">${log.message}</div>
+                ${log.url ? `<div class="log-url">🌐 ${log.url}</div>` : ''}
+                ${log.sessionId ? `<div class="log-session">🔑 Session: ${log.sessionId}</div>` : ''}
+            `;
+
+            consoleContainer.appendChild(logEntry);
+        });
+
+        logSystemEvent(`Console tab loaded with ${allLogs.length} log entries`, 'info', 'loadConsoleTab', 'script.js');
+    } catch (error) {
+        console.error('Error loading console tab:', error);
+        logSystemEvent(`Error loading console tab: ${error.message}`, 'error', 'loadConsoleTab', 'script.js');
+    }
+}
+
+function getLevelIcon(level) {
+    const icons = {
+        'critical': '🚨',
+        'error': '❌',
+        'warning': '⚠️',
+        'info': 'ℹ️',
+        'debug': '🔧'
+    };
+    return icons[level] || 'ℹ️';
+}
+
+function clearSystemLogs() {
+    if (confirm('Are you sure you want to clear all system logs? This action cannot be undone.')) {
+        try {
+            localStorage.removeItem('systemLogs');
+            localStorage.removeItem('securityLog');
+
+            // Add a log entry about the clear action
+            addSecurityEvent('System logs cleared by admin');
+
+            // Reload the console tab
+            loadConsoleTab();
+
+            showToast('System logs cleared successfully!', 'success');
+            logSystemEvent('System logs cleared by admin', 'info', 'clearSystemLogs', 'script.js');
+        } catch (error) {
+            console.error('Error clearing system logs:', error);
+            logSystemEvent(`Error clearing system logs: ${error.message}`, 'error', 'clearSystemLogs', 'script.js');
+            showToast('Failed to clear system logs.', 'error');
+        }
+    }
+}
+
+function exportSystemLogs() {
+    try {
+        const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+        const systemLogs = JSON.parse(localStorage.getItem('systemLogs') || '[]');
+
+        const allLogs = [...securityLog, ...systemLogs].sort((a, b) => 
+            new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)
+        );
+
+        const exportData = {
+            exportedAt: new Date().toISOString(),
+            totalLogs: allLogs.length,
+            logs: allLogs
+        };
+
+        const dataStr = JSON.stringify(exportData, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `system_logs_export_${new Date().toISOString().split('T')[0]}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+
+        showToast('System logs exported successfully!', 'success');
+        logSystemEvent('System logs exported by admin', 'info', 'exportSystemLogs', 'script.js');
+    } catch (error) {
+        console.error('Error exporting system logs:', error);
+        logSystemEvent(`Error exporting system logs: ${error.message}`, 'error', 'exportSystemLogs', 'script.js');
+        showToast('Failed to export system logs.', 'error');
+    }
+}
+
+// System event logging function (for general script events)
+function logSystemEvent(message, level = 'info', functionName = 'N/A', filePath = 'N/A') {
+    try {
+        const logEntry = {
+            message: message,
+            level: level,
+            timestamp: new Date().toISOString(),
+            function: functionName,
+            file: filePath,
+            url: window.location.href,
+            sessionId: localStorage.getItem('currentSessionId')
+        };
+
+        // Store in localStorage for console tab
+        const systemLogs = JSON.parse(localStorage.getItem('systemLogs') || '[]');
+        systemLogs.unshift(logEntry);
+
+        // Keep only last 200 system logs
+        if (systemLogs.length > 200) {
+            systemLogs.splice(200);
+        }
+
+        localStorage.setItem('systemLogs', JSON.stringify(systemLogs));
+
+        // For critical errors, also log to console.error
+        if (level === 'error' || level === 'critical') {
+            console.error(`[${level.toUpperCase()}] [${functionName}] ${message}`);
+        } else if (level === 'warning') {
+            console.warn(`[${level.toUpperCase()}] [${functionName}] ${message}`);
+        } else {
+            console.log(`[${level.toUpperCase()}] [${functionName}] ${message}`);
+        }
+    } catch (error) {
+        console.error('Failed to log system event:', error);
+    }
+}
+
+// Helper function to enforce security policies
+function enforceSecurityPolicy(action, userEmail) {
+    if (!securityManagerInstance) {
+        console.warn('SecurityManager not initialized, skipping policy enforcement.');
+        return true; // Allow action if manager is not initialized
+    }
+    return securityManagerInstance.enforceSecurityPolicy(action, userEmail);
+}
+
+// Helper function to create a security session
+function createSecuritySession(userEmail) {
+    if (!securityManagerInstance) {
+        console.warn('SecurityManager not initialized, creating fallback session.');
+        // Fallback if manager is not properly initialized
+        return localStorage.getItem('currentSessionId') || 'fallback_session_' + Date.now();
+    }
+    return securityManagerInstance.createSession(userEmail);
+}
+
+// Product functionality for buttons
+function addToCart(productId) {
+    try {
+        console.log('🛒 Adding product to cart:', productId);
+        
+        if (!productId) {
+            showToast('Invalid product ID', 'error');
+            logSystemEvent('addToCart called with invalid product ID', 'warning', 'addToCart', 'script.js');
+            return false;
+        }
+
+        // Check if user is authenticated first
+        if (!isAuthenticated || !currentUser) {
+            showToast('🔑 Please sign in first to add products to your cart', 'warning');
+            logSystemEvent(`Cart access attempted without authentication for product ${productId}`, 'warning', 'addToCart', 'script.js');
+            
+            // Trigger sign-in process
+            setTimeout(() => {
+                handleAuthClick();
+            }, 1500);
+            
+            return false;
+        }
+
+        // Get products from localStorage with fallback to currentProducts
+        let products = JSON.parse(localStorage.getItem('products') || '[]');
+        if (products.length === 0 && currentProducts.length > 0) {
+            products = currentProducts;
+            localStorage.setItem('products', JSON.stringify(products));
+        }
+        const product = products.find(p => p.id === productId || p.id === productId.toString());
+        
+        if (!product) {
+            showToast('Product not found', 'error');
+            console.error('Product not found with ID:', productId);
+            logSystemEvent(`Product not found: ${productId}`, 'error', 'addToCart', 'script.js');
+            return false;
+        }
+
+        // Get current cart
+        let cart = JSON.parse(localStorage.getItem('cart') || '[]');
+        console.log('Current cart before adding:', cart);
+        
+        // Check if product already exists in cart
+        const existingItemIndex = cart.findIndex(item => item.id === productId || item.id === productId.toString());
+        
+        if (existingItemIndex !== -1) {
+            // Update existing item quantity
+            cart[existingItemIndex].quantity = (cart[existingItemIndex].quantity || 1) + 1;
+            cart[existingItemIndex].updatedAt = new Date().toISOString();
+            console.log('Updated existing item quantity:', cart[existingItemIndex].quantity);
+            showToast(`${product.title} quantity updated in cart!`, 'success');
+        } else {
+            // Add new item to cart
+            const cartItem = {
+                id: product.id,
+                title: product.title || 'Unknown Product',
+                price: product.price || '$0.00',
+                originalPrice: product.originalPrice || product.price || '$0.00',
+                category: product.category || 'other',
+                description: product.description || 'No description available',
+                image: product.image || '',
+                discount: product.discount || 0,
+                youtube: product.youtube || '',
+                external: product.external || '',
+                quantity: 1,
+                addedAt: new Date().toISOString()
+            };
+            
+            cart.unshift(cartItem); // Add to beginning of array
+            console.log('Added new item to cart:', cartItem);
+            showToast(`${product.title} added to cart!`, 'success');
+        }
+
+        // Save cart to localStorage with validation
+        try {
+            localStorage.setItem('cart', JSON.stringify(cart));
+            console.log('✅ Cart saved to localStorage successfully. Total items:', cart.length);
+            
+            // Verify the save was successful
+            const savedCart = JSON.parse(localStorage.getItem('cart') || '[]');
+            if (savedCart.length !== cart.length) {
+                throw new Error('Cart save verification failed');
+            }
+            
+        } catch (saveError) {
+            console.error('❌ Failed to save cart to localStorage:', saveError);
+            showToast('Failed to save item to cart', 'error');
+            logSystemEvent(`Cart save failed: ${saveError.message}`, 'error', 'addToCart', 'script.js');
+            return false;
+        }
+
+        // Track view for analytics (new system - only on Add to Cart with cooldown)
+        trackProductView(productId, currentUser.email);
+
+        // Update product buttons on current page
+        updateProductButtons();
+        
+        // Force update cart displays across all contexts
+        try {
+            // Method 1: Direct function call if available
+            if (typeof window.updateCartDisplay === 'function') {
+                setTimeout(() => {
+                    console.log('🔄 Calling window.updateCartDisplay');
+                    window.updateCartDisplay();
+                }, 50);
+            }
+            
+            // Method 2: Dispatch multiple events for maximum compatibility
+            const events = [
+                new CustomEvent('cartUpdated', {
+                    detail: { cart: cart, action: 'add', productId: productId, timestamp: Date.now() }
+                }),
+                new CustomEvent('cartChanged', {
+                    detail: { cart: cart, action: 'add', productId: productId }
+                }),
+                new Event('cartModified'),
+                new StorageEvent('storage', {
+                    key: 'cart',
+                    newValue: JSON.stringify(cart),
+                    oldValue: JSON.stringify(cart.slice(0, -1)),
+                    url: window.location.href,
+                    storageArea: localStorage
+                })
+            ];
+            
+            events.forEach((event, index) => {
+                setTimeout(() => {
+                    window.dispatchEvent(event);
+                    document.dispatchEvent(event);
+                    console.log(`📡 Dispatched event ${index + 1}:`, event.type);
+                }, index * 50);
+            });
+            
+            // Force purchase page update if we're on it
+            if (window.location.pathname.includes('purchase.html')) {
+                setTimeout(() => {
+                    if (typeof window.forceCartRefresh === 'function') {
+                        window.forceCartRefresh();
+                    }
+                }, 200);
+            }
+            
+        } catch (eventError) {
+            console.warn('⚠️ Failed to dispatch cart update events:', eventError);
+        }
+        
+        // Log successful addition
+        logSystemEvent(`Product added to cart successfully: ${product.title} (ID: ${productId})`, 'info', 'addToCart', 'script.js');
+        
+        return true;
+        
+    } catch (error) {
+        console.error('💥 Critical error in addToCart:', error);
+        logSystemEvent(`Critical addToCart error for product ${productId}: ${error.message}`, 'error', 'addToCart', 'script.js');
+        showToast('Failed to add product to cart. Please try again.', 'error');
+        return false;
+    }
+}
+
+function isProductInCart(productId) {
+    try {
+        const cart = JSON.parse(localStorage.getItem('cart') || '[]');
+        return cart.some(item => item.id === productId);
+    } catch (error) {
+        console.error('Error checking cart:', error);
+        return false;
+    }
+}
+
+function updateProductButtons() {
+    try {
+        const cartButtons = document.querySelectorAll('.cart-btn');
+        cartButtons.forEach(button => {
+            const productId = button.getAttribute('onclick')?.match(/addToCart\('([^']+)'\)/)?.[1];
+            if (productId) {
+                const icon = button.querySelector('.btn-icon');
+                const text = button.querySelector('.btn-text');
+                
+                if (isProductInCart(productId)) {
+                    // Product is in cart - show "added" state
+                    button.classList.add('in-cart');
+                    button.disabled = true;
+                    if (icon) icon.textContent = '✓';
+                    if (text) text.textContent = 'ADDED TO CART';
+                } else {
+                    // Product is not in cart - show "available" state
+                    button.classList.remove('in-cart');
+                    button.disabled = false;
+                    if (icon) icon.textContent = '🛒';
+                    if (text) text.textContent = 'ADD TO CART';
+                }
+            }
+        });
+        console.log('🔄 Product buttons updated successfully');
+    } catch (error) {
+        console.error('Error updating product buttons:', error);
+    }
+}
+
+function openProductDetailModal(productId) {
+    try {
+        const products = JSON.parse(localStorage.getItem('products') || '[]');
+        const product = products.find(p => p.id === productId);
+        
+        if (!product) {
+            showToast('Product not found', 'error');
+            return;
+        }
+
+        const modal = document.getElementById('productModal');
+        const productDetail = document.getElementById('productDetail');
+        
+        if (!modal || !productDetail) {
+            console.error('Modal elements not found');
+            return;
+        }
+
+        productDetail.innerHTML = `
+            <div class="product-detail-compact">
+                <div class="product-detail-header-compact">
+                    <h3 class="product-detail-title">${product.title}</h3>
+                    <p class="product-detail-category">${getCategoryDisplayName(product.category)}</p>
+                    <div class="product-detail-price">${product.price}</div>
+                </div>
+                
+                ${product.image ? `
+                    <div class="product-detail-image-compact">
+                        <img src="${product.image}" alt="${product.title}">
+                    </div>
+                ` : ''}
+                
+                <div class="product-detail-description">
+                    ${product.description || 'No description available'}
+                </div>
+                
+                <div class="product-detail-actions">
+                    <button class="product-detail-btn cart ${isProductInCart(productId) ? 'in-cart' : ''}" 
+                            onclick="addToCartFromModal('${productId}')" 
+                            ${isProductInCart(productId) ? 'disabled' : ''}>
+                        <span>${isProductInCart(productId) ? '✅' : '🛒'}</span>
+                        <span>${isProductInCart(productId) ? 'Added to Cart' : 'Add to Cart'}</span>
+                    </button>
+                    
+                    ${product.youtube ? `
+                        <a href="${product.youtube}" target="_blank" class="product-detail-btn youtube">
+                            <span>🎥</span>
+                            <span>Watch Demo</span>
+                        </a>
+                    ` : ''}
+                    
+                    ${product.external ? `
+                        <a href="${product.external}" target="_blank" class="product-detail-btn external">
+                            <span>🔗</span>
+                            <span>External Link</span>
+                        </a>
+                    ` : ''}
+                </div>
+            </div>
+        `;
+
+        modal.style.display = 'flex';
+        modal.classList.add('show');
+        document.body.style.overflow = 'hidden';
+        logSystemEvent(`Product detail modal opened for: ${product.title}`, 'info', 'openProductDetailModal', 'script.js');
+    } catch (error) {
+        console.error('Error opening product detail modal:', error);
+        showToast('Failed to open product details', 'error');
+    }
+}
+
+function closeProductDetailModal() {
+    try {
+        const modal = document.getElementById('productModal');
+        if (modal) {
+            modal.classList.remove('show');
+            document.body.style.overflow = '';
+            setTimeout(() => {
+                modal.style.display = 'none';
+            }, 300);
+        }
+    } catch (error) {
+        console.error('Error closing modal:', error);
+    }
+}
+
+function addToCartFromModal(productId) {
+    addToCart(productId);
+    const button = document.querySelector(`.product-detail-btn.cart`);
+    if (button && isProductInCart(productId)) {
+        button.disabled = true;
+        button.classList.add('in-cart');
+        button.innerHTML = '<span>✅</span><span>Added to Cart</span>';
+    }
+}
+
+function getCategoryDisplayName(category) {
+    const categoryMap = {
+        'music': '🎵 Music Production',
+        'fps': '🎯 First Person Shooters', 
+        'design': '🎨 Design & Graphics',
+        'development': '💻 Development Tools',
+        'productivity': '⚡ Productivity',
+        'gaming': '🎮 Gaming Utilities',
+        'security': '🔒 Security & Privacy',
+        'other': '📦 Other'
+    };
+    return categoryMap[category] || '📦 Other';
+}
+
+async function displayProducts(productsToShow = null) {
+    try {
+        let products = productsToShow;
+        
+        // If no specific products provided, load from database
+        if (!products) {
+            try {
+                const response = await fetch('/api/products');
+                if (response.ok) {
+                    products = await response.json();
+                    // Update localStorage backup
+                    localStorage.setItem('products', JSON.stringify(products));
+                } else {
+                    // Fallback to localStorage
+                    products = JSON.parse(localStorage.getItem('products') || '[]');
+                }
+            } catch (error) {
+                console.log('Database unavailable, using localStorage:', error);
+                products = JSON.parse(localStorage.getItem('products') || '[]');
+            }
+        }
+        
+        const productsGrid = document.getElementById('productsGrid');
+        const noProductsMessage = document.getElementById('noProductsMessage');
+        const searchResults = document.getElementById('searchResults');
+
+        if (!productsGrid) return;
+
+        if (products.length === 0) {
+            productsGrid.innerHTML = '';
+            if (noProductsMessage) noProductsMessage.style.display = 'block';
+            if (searchResults) searchResults.textContent = 'No products found';
+            return;
+        }
+
+        if (noProductsMessage) noProductsMessage.style.display = 'none';
+        if (searchResults) searchResults.textContent = `Showing ${products.length} product${products.length !== 1 ? 's' : ''}`;
+
+        productsGrid.innerHTML = products.map(product => `
+            <div class="product-card">
+                <div class="product-image-container">
+                    ${product.image ? 
+                        `<img src="${product.image}" alt="${product.title}" class="product-image" loading="lazy">` :
+                        '<div class="product-image placeholder">📦</div>'
+                    }
+                </div>
+                <div class="product-content">
+                    <div class="product-header">
+                        <div class="product-info-row">
+                            <span class="product-info-label">NAME:</span>
+                            <span class="product-title">${product.title}</span>
+                        </div>
+                        <div class="product-info-row">
+                            <span class="product-info-label">CATEGORY:</span>
+                            <span class="product-category">${getCategoryDisplayName(product.category)}</span>
+                        </div>
+                        <div class="product-info-row">
+                            <span class="product-info-label">PRICE (USD):</span>
+                            <span class="product-price">
+                                ${product.discount > 0 ? 
+                                    `<span class="discounted-price">${product.price}</span>
+                                     <span class="original-price">${product.originalPrice}</span>
+                                     <span class="discount-badge">-${product.discount}%</span>` 
+                                    : product.price}
+                            </span>
+                        </div>
+                    </div>
+                    <div class="product-description-section">
+                        <span class="product-description-label">DESCRIPTION:</span>
+                        <p class="product-description">${product.description || 'No description available'}</p>
+                    </div>
+                    <div class="product-actions">
+                        <button onclick="addToCart('${product.id}')" class="product-btn cart-btn full-width ${isProductInCart(product.id) ? 'in-cart' : ''}" ${isProductInCart(product.id) ? 'disabled' : ''}>
+                            <span class="btn-icon">${isProductInCart(product.id) ? '✓' : '🛒'}</span>
+                            <span class="btn-text">${isProductInCart(product.id) ? 'ADDED TO CART' : 'ADD TO CART'}</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+
+        // Update button states after rendering
+        setTimeout(updateProductButtons, 100);
+    } catch (error) {
+        console.error('Error displaying products:', error);
+    }
+}
+
+function initProductsPage() {
+    try {
+        // Initialize search functionality
+        const searchInput = document.getElementById('productSearch');
+        const categoryFilter = document.getElementById('categoryFilter');
+
+        if (searchInput) {
+            searchInput.addEventListener('input', filterProducts);
+        }
+
+        if (categoryFilter) {
+            categoryFilter.addEventListener('change', filterProducts);
+            populateCategoryFilter();
+        }
+
+        displayProducts();
+        logSystemEvent('Products page initialized', 'info', 'initProductsPage', 'script.js');
+    } catch (error) {
+        console.error('Error initializing products page:', error);
+    }
+}
+
+function filterProducts() {
+    try {
+        const searchTerm = document.getElementById('productSearch')?.value.toLowerCase() || '';
+        const selectedCategory = document.getElementById('categoryFilter')?.value || '';
+        const allProducts = JSON.parse(localStorage.getItem('products') || '[]');
+
+        const filteredProducts = allProducts.filter(product => {
+            const matchesSearch = !searchTerm || 
+                product.title.toLowerCase().includes(searchTerm) ||
+                product.description.toLowerCase().includes(searchTerm) ||
+                product.category.toLowerCase().includes(searchTerm);
+
+            const matchesCategory = !selectedCategory || product.category === selectedCategory;
+
+            return matchesSearch && matchesCategory;
+        });
+
+        displayProducts(filteredProducts);
+    } catch (error) {
+        console.error('Error filtering products:', error);
+    }
+}
+
+function populateCategoryFilter() {
+    try {
+        const categoryFilter = document.getElementById('categoryFilter');
+        if (!categoryFilter) return;
+
+        const products = JSON.parse(localStorage.getItem('products') || '[]');
+        const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
+
+        categoryFilter.innerHTML = '<option value="">All Categories</option>';
+        categories.forEach(category => {
+            const option = document.createElement('option');
+            option.value = category;
+            option.textContent = getCategoryDisplayName(category);
+            categoryFilter.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error populating category filter:', error);
+    }
+}
+
+// PayPal Integration for Automatic File Downloads
+async function handleSuccessfulPayment(paymentDetails) {
+    try {
+        if (!paymentDetails.items || !Array.isArray(paymentDetails.items)) {
+            console.error('No items found in payment details');
+            return;
+        }
+
+        // Process each purchased product
+        for (const item of paymentDetails.items) {
+            if (item.productId) {
+                // Download files for this product
+                await window.downloadProductFiles(item.productId);
+            }
+        }
+
+        // Add quality points for the purchase
+        if (currentUser && currentUser.email) {
+            addQualityPoints(currentUser.email, paymentDetails.items.length);
+        }
+
+        // Log successful transaction
+        logSystemEvent(`Successful payment processed, files downloaded for ${paymentDetails.items.length} products`, 'info', 'handleSuccessfulPayment', 'script.js');
+        showToast('🎉 Payment successful! Your files are being downloaded automatically.', 'success');
+
+    } catch (error) {
+        console.error('Error handling successful payment:', error);
+        logSystemEvent(`Error handling successful payment: ${error.message}`, 'error', 'handleSuccessfulPayment', 'script.js');
+        showToast('Payment successful, but there was an issue downloading files. Please contact support.', 'warning');
+    }
+}
+
+// Global function to access IndexedDB file download from other pages
+window.downloadProductFiles = async function(productId) {
+    try {
+        // Initialize IndexedDB if not already done
+        if (!window.productFileDB) {
+            await window.initializeProductFileDB();
+        }
+
+        const request = indexedDB.open('ProductFilesDB', 1);
+        
+        request.onsuccess = function(event) {
+            const db = event.target.result;
+            const transaction = db.transaction(['productFiles'], 'readonly');
+            const objectStore = transaction.objectStore('productFiles');
+            const index = objectStore.index('productId');
+            const getRequest = index.getAll(productId);
+
+            getRequest.onsuccess = function() {
+                const files = getRequest.result || [];
+                if (files.length === 0) {
+                    console.log(`No files found for product ${productId}`);
+                    return;
+                }
+
+                // Download each file
+                files.forEach(file => {
+                    const link = document.createElement('a');
+                    link.href = file.fileData;
+                    link.download = file.fileName;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                });
+
+                console.log(`Downloaded ${files.length} file(s) for product ${productId}`);
+                if (window.showToast) {
+                    window.showToast(`Downloaded ${files.length} file(s) successfully!`, 'success');
+                }
+            };
+
+            getRequest.onerror = function() {
+                console.error(`Failed to load files for product ${productId}`);
+            };
+        };
+
+        request.onerror = function() {
+            console.error('Failed to open IndexedDB for file download');
+        };
+
+    } catch (error) {
+        console.error('Error in downloadProductFiles:', error);
+    }
+};
+
+// Global function to initialize IndexedDB from other pages
+window.initializeProductFileDB = function() {
+    return new Promise((resolve, reject) => {
+        const request = indexedDB.open('ProductFilesDB', 1);
+
+        request.onerror = function() {
+            reject(request.error);
+        };
+
+        request.onsuccess = function(event) {
+            window.productFileDB = event.target.result;
+            resolve(window.productFileDB);
+        };
+
+        request.onupgradeneeded = function(event) {
+            const db = event.target.result;
+            if (!db.objectStoreNames.contains('productFiles')) {
+                const objectStore = db.createObjectStore('productFiles', { keyPath: 'id', autoIncrement: true });
+                objectStore.createIndex('productId', 'productId', { unique: false });
+                objectStore.createIndex('fileName', 'fileName', { unique: false });
+            }
+        };
+    });
+};
+
+// Initialize page based on current location
+document.addEventListener('DOMContentLoaded', function() {
+    try {
+        initKeyboardNavigation();
+        initSmoothScrolling();
+        initModernAboutSection();
+
+        // Prevent multiple initializations
+        if (window.isAppInitialized) {
+            return;
+        }
+        window.isAppInitialized = true;
+
+        // Deobfuscate email
+        deobfuscateEmail();
+
+        // Initialize critical features first
+        initializeSecurityManager();
+        initPageTransition();
+        loadAuthState();
+        checkAuthStatus();
+        checkDashboardAccess();
+        initEmailJS();
+        initGoogleSignIn();
+        initContactForm();
+        initHeroParticles();
+
+        // Make updateCartDisplay globally available for all pages
+        window.updateCartDisplay = function() {
+            // Check if we're on purchase page and delegate to purchase-specific function
+            if (window.location.pathname.includes('purchase.html')) {
+                // Call the purchase page specific function if it exists
+                const purchaseUpdateFn = window.purchaseUpdateCartDisplay || updateProductButtons;
+                if (typeof purchaseUpdateFn === 'function') {
+                    purchaseUpdateFn();
+                }
+            } else {
+                // For other pages, update button states
+                updateProductButtons();
+            }
+        };
+
+        // Lazy load non-critical features
+        lazyLoadFeatures();
+
+        const enterBtn = document.getElementById('enterBtn');
+        if (enterBtn) {
+            enterBtn.addEventListener('click', handleEnterExperience);
+        }
+
+        if (window.location.pathname.includes('purchase.html')) {
+            updateCartDisplay();
+            // Initialize PayPal integration and promo code system
+            if (typeof initPayPalButtons === 'function') {
+                initPayPalButtons();
+            } else {
+                console.warn('PayPal integration not available - payment processing limited');
+            }
+            
+            if (typeof initPromoCodeSystem === 'function') {
+                initPromoCodeSystem();
+            } else {
+                console.log('Promo code system initialized with basic functionality');
+                // Basic promo code functionality as fallback
+                window.applyPromoCode = function(code) {
+                    const validCodes = {
+                        'WELCOME10': { discount: 0.10, type: 'percentage' },
+                        'SAVE20': { discount: 0.20, type: 'percentage' },
+                        'FIRST5': { discount: 5.00, type: 'fixed' }
+                    };
+                    return validCodes[code.toUpperCase()] || null;
+                };
+            }
+        } else if (window.location.pathname.includes('products.html')) {
+            displayProducts();
+            initProductsPage();
+            setTimeout(updateProductButtons, 100);
+
+            const modal = document.getElementById('productModal');
+            const closeBtn = modal?.querySelector('.close');
+
+            if (closeBtn) {
+                closeBtn.addEventListener('click', closeProductDetailModal);
+            }
+
+            if (modal) {
+                modal.addEventListener('click', (e) => {
+                    if (e.target === modal) {
+                        closeProductDetailModal();
+                    }
+                });
+            }
+        } else if (window.location.pathname.includes('dashboard.html')) {
+            console.log('[INFO] [DOMContentLoaded] Initializing dashboard...');
+            // Initialize dashboard with delay to ensure DOM is ready
+            setTimeout(async () => {
+                initDashboardTabs();
+                await initProductManager();
+
+                // Set default tab to analytics
+                const defaultTab = 'analytics';
+                console.log('[INFO] [DOMContentLoaded] Setting default tab:', defaultTab);
+                await switchTab(defaultTab);
+            }, 100);
+        }
+
+        // Initialize universal features
+        initScrollAnimations();
+
+        const authBtn = document.getElementById('authBtn');
+        if (authBtn) {
+            authBtn.addEventListener('click', handleAuthClick);
+        }
+
+        const navLinks = document.querySelectorAll('.nav-link');
+        navLinks.forEach(link => {
+            link.addEventListener('click', (e) => {
+                if (link.getAttribute('href') && link.getAttribute('href') !== '#') {
+                    e.preventDefault();
+                    smoothPageTransition(link.getAttribute('href'));
+                }
+            });
+        });
+
+        const logo = document.querySelector('.logo');
+        if (logo) {
+            logo.addEventListener('click', () => {
+                smoothPageTransition('index.html');
+            });
+        }
+        logSystemEvent('DOMContentLoaded event handled, app initialization complete', 'info', 'DOMContentLoaded', 'script.js');
+    } catch (error) {
+        console.error('[ERROR] [DOMContentLoaded] Error during DOMContentLoaded:', error);
+        logSystemEvent(`DOMContentLoaded error: ${error.message}`, 'error', 'DOMContentLoaded', 'script.js');
+    }
+});
+
+// Modern About Section Functionality
+function initModernAboutSection() {
+    try {
+        initCounterAnimations();
+        init3DTiltEffect();
+        initIntersectionObserver();
+        logSystemEvent('Modern about section initialized', 'info', 'initModernAboutSection', 'script.js');
+    } catch (error) {
+        console.error('Error initializing modern about section:', error);
+        logSystemEvent(`Error initializing modern about section: ${error.message}`, 'error', 'initModernAboutSection', 'script.js');
+    }
+}
+
+// Animated Counter for Statistics
+function initCounterAnimations() {
+    const statItems = document.querySelectorAll('.stat-item');
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                const statNumber = entry.target.querySelector('.stat-number');
+                const targetCount = parseInt(entry.target.dataset.count) || 0;
+                animateCounter(statNumber, targetCount);
+                observer.unobserve(entry.target);
+            }
+        });
+    }, { threshold: 0.5 });
+
+    statItems.forEach(item => observer.observe(item));
+}
+
+function animateCounter(element, target) {
+    let current = 0;
+    const increment = target / 100;
+    const timer = setInterval(() => {
+        current += increment;
+        if (current >= target) {
+            current = target;
+            clearInterval(timer);
+        }
+        
+        if (target === 99) {
+            element.textContent = Math.floor(current) + '%';
+        } else {
+            element.textContent = Math.floor(current) + '+';
+        }
+    }, 20);
+}
+
+// 3D Tilt Effect for Feature Cards
+function init3DTiltEffect() {
+    const cards = document.querySelectorAll('[data-tilt]');
+    
+    cards.forEach(card => {
+        card.addEventListener('mousemove', handleTilt);
+        card.addEventListener('mouseleave', resetTilt);
+    });
+}
+
+function handleTilt(e) {
+    const card = e.currentTarget;
+    const rect = card.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const centerX = rect.width / 2;
+    const centerY = rect.height / 2;
+    
+    const rotateX = (y - centerY) / 10;
+    const rotateY = (centerX - x) / 10;
+    
+    card.style.transform = `perspective(1000px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale3d(1.02, 1.02, 1.02)`;
+}
+
+function resetTilt(e) {
+    const card = e.currentTarget;
+    card.style.transform = 'perspective(1000px) rotateX(0deg) rotateY(0deg) scale3d(1, 1, 1)';
+}
+
+// Enhanced Intersection Observer for Animations
+function initIntersectionObserver() {
+    const animatedElements = document.querySelectorAll('.feature-card, .about-header, .stat-item');
+    
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                entry.target.style.opacity = '1';
+                entry.target.style.transform = 'translateY(0)';
+            }
+        });
+    }, {
+        threshold: 0.1,
+        rootMargin: '0px 0px -50px 0px'
+    });
+
+    animatedElements.forEach(el => {
+        el.style.opacity = '0';
+        el.style.transform = 'translateY(30px)';
+        el.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+        observer.observe(el);
+    });
+}
+
+window.addEventListener('resize', function() {
+    // Re-initialize charts on resize to ensure responsiveness
+    if (typeof Chart !== 'undefined' && window.location.pathname.includes('dashboard.html')) {
+        setTimeout(() => {
+            initCharts();
+        }, 100);
+    }
+});
+
+// Enhanced Security Management Functions
+class EnhancedSecurityManager {
+    constructor() {
+        this.securityLevel = 'medium';
+        this.maxFailedAttempts = 5;
+        this.lockoutDuration = 30 * 60 * 1000; // 30 minutes
+        this.init();
+    }
+
+    init() {
+        this.initSecurityMonitoring();
+        this.initRateLimiting();
+        this.initSessionManagement();
+        console.log('🔒 Security Manager initialized');
+    }
+
+    // Enhanced rate limiting system
+    initRateLimiting() {
+        this.rateLimits = new Map();
+        this.cleanupInterval = setInterval(() => {
+            this.cleanupRateLimits();
+        }, 60000); // Cleanup every minute
+    }
+
+    checkRateLimit(identifier, maxRequests = 10, windowMs = 60000) {
+        const now = Date.now();
+        const windowStart = now - windowMs;
+
+        if (!this.rateLimits.has(identifier)) {
+            this.rateLimits.set(identifier, []);
+        }
+
+        const requests = this.rateLimits.get(identifier);
+        const recentRequests = requests.filter(timestamp => timestamp > windowStart);
+
+        if (recentRequests.length >= maxRequests) {
+            this.addSecurityEvent(`Rate limit exceeded for ${identifier}`, 'warning');
+            return false;
+        }
+
+        recentRequests.push(now);
+        this.rateLimits.set(identifier, recentRequests);
+        return true;
+    }
+
+    cleanupRateLimits() {
+        const now = Date.now();
+        const oneHourAgo = now - 3600000;
+
+        for (const [identifier, requests] of this.rateLimits.entries()) {
+            const recentRequests = requests.filter(timestamp => timestamp > oneHourAgo);
+            if (recentRequests.length === 0) {
+                this.rateLimits.delete(identifier);
+            } else {
+                this.rateLimits.set(identifier, recentRequests);
+            }
+        }
+    }
+
+    // Enhanced session management
+    initSessionManagement() {
+        this.activeSessions = new Map();
+        this.maxSessionDuration = 8 * 60 * 60 * 1000; // 8 hours
+
+        // Check sessions every 5 minutes
+        setInterval(() => {
+            this.validateActiveSessions();
+        }, 5 * 60 * 1000);
+    }
+
+    createSession(userEmail) {
+        const sessionId = this.generateSessionId();
+        const session = {
+            id: sessionId,
+            userEmail: userEmail,
+            createdAt: Date.now(),
+            lastActivity: Date.now(),
+            ipAddress: window.banSystem?.currentUserIP || 'unknown',
+            userAgent: navigator.userAgent,
+            isActive: true
+        };
+
+        this.activeSessions.set(sessionId, session);
+        localStorage.setItem('currentSessionId', sessionId);
+        this.addSecurityEvent(`New session created for ${userEmail}`);
+        return sessionId;
+    }
+
+    updateSessionActivity(sessionId = null) {
+        const currentSessionId = sessionId || localStorage.getItem('currentSessionId');
+        if (currentSessionId && this.activeSessions.has(currentSessionId)) {
+            const session = this.activeSessions.get(currentSessionId);
+            session.lastActivity = Date.now();
+            this.activeSessions.set(currentSessionId, session);
+        }
+    }
+
+    validateActiveSessions() {
+        const now = Date.now();
+        let expiredCount = 0;
+
+        for (const [sessionId, session] of this.activeSessions.entries()) {
+            const sessionAge = now - session.createdAt;
+            const inactiveTime = now - session.lastActivity;
+
+            if (sessionAge > this.maxSessionDuration || inactiveTime > 30 * 60 * 1000) {
+                this.terminateSession(sessionId, 'Session expired');
+                expiredCount++;
+            }
+        }
+
+        if (expiredCount > 0) {
+            console.log(`🔒 Terminated ${expiredCount} expired sessions`);
+        }
+    }
+
+    terminateSession(sessionId, reason = 'User logout') {
+        if (this.activeSessions.has(sessionId)) {
+            const session = this.activeSessions.get(sessionId);
+            this.addSecurityEvent(`Session terminated for ${session.userEmail}: ${reason}`);
+            this.activeSessions.delete(sessionId);
+
+            // If this is the current session, sign out the user
+            const currentSessionId = localStorage.getItem('currentSessionId');
+            if (sessionId === currentSessionId) {
+                localStorage.removeItem('currentSessionId');
+                if (reason === 'Session expired') {
+                    signOut();
+                    showToast('Session expired. Please sign in again.', 'warning');
+                }
+            }
+        }
+    }
+
+    generateSessionId() {
+        return 'sess_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    }
+
+    // Enhanced security monitoring
+    initSecurityMonitoring() {
+        this.monitorPageVisibility();
+        this.monitorDevTools();
+        this.monitorNetworkRequests();
+        this.monitorLocalStorageChanges();
+    }
+
+    monitorPageVisibility() {
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                this.addSecurityEvent('Page became hidden - potential tab switch or minimize');
+            } else {
+                this.addSecurityEvent('Page became visible - user returned');
+                this.updateSessionActivity();
+            }
+        });
+    }
+
+    monitorDevTools() {
+        let devtools = {
+            open: false,
+            orientation: null
+        };
+
+        setInterval(() => {
+            if (window.outerHeight - window.innerHeight > 200 || 
+                window.outerWidth - window.innerWidth > 200) {
+                if (!devtools.open) {
+                    devtools.open = true;
+                    this.addSecurityEvent('Developer tools opened - potential inspection attempt', 'warning');
+                }
+            } else {
+                if (devtools.open) {
+                    devtools.open = false;
+                    this.addSecurityEvent('Developer tools closed');
+                }
+            }
+        }, 1000);
+    }
+
+    monitorNetworkRequests() {
+        const originalFetch = window.fetch;
+        window.fetch = async (...args) => {
+            const url = args[0];
+            if (typeof url === 'string' && !url.startsWith(window.location.origin)) {
+                this.addSecurityEvent(`External network request to: ${url}`);
+            }
+            return originalFetch.apply(window, args);
+        };
+    }
+
+    monitorLocalStorageChanges() {
+        const originalSetItem = localStorage.setItem;
+        localStorage.setItem = (key, value) => {
+            if (['user', 'authToken', 'bannedUsers', 'bannedIPs'].includes(key)) {
+                this.addSecurityEvent(`Critical localStorage change: ${key}`, 'critical');
+            }
+            return originalSetItem.call(localStorage, key, value);
+        };
+    }
+
+    // Enhanced threat detection
+    detectAnomalousActivity(userEmail) {
+        const activities = JSON.parse(localStorage.getItem('userActivities') || '{}');
+        const userActivity = activities[userEmail] || [];
+
+        const now = Date.now();
+        const recentActivity = userActivity.filter(activity => now - activity.timestamp < 3600000); // Last hour
+
+        const anomalies = {
+            rapidClicks: this.detectRapidClicking(recentActivity),
+            suspiciousNavigation: this.detectSuspiciousNavigation(recentActivity),
+            unusualTiming: this.detectUnusualTiming(recentActivity),
+            multipleDevices: this.detectMultipleDevices(userEmail)
+        };
+
+        const riskScore = this.calculateAnomalyRiskScore(anomalies);
+
+        if (riskScore > 70) {
+            this.addSecurityEvent(`High anomaly risk detected for ${userEmail}: ${riskScore}%`, 'warning');
+            return { anomalous: true, riskScore, details: anomalies };
+        }
+
+        return { anomalous: false, riskScore, details: anomalies };
+    }
+
+    detectRapidClicking(activities) {
+        const clickEvents = activities.filter(a => a.type === 'click');
+        if (clickEvents.length > 50) { // More than 50 clicks in an hour
+            return { detected: true, count: clickEvents.length };
+        }
+        return { detected: false, count: clickEvents.length };
+    }
+
+    detectSuspiciousNavigation(activities) {
+        const navigationEvents = activities.filter(a => a.type === 'navigation');
+        const uniquePages = new Set(navigationEvents.map(a => a.page));
+
+        if (navigationEvents.length > 100 || uniquePages.size > 20) {
+            return { detected: true, navigationCount: navigationEvents.length, uniquePages: uniquePages.size };
+        }
+        return { detected: false, navigationCount: navigationEvents.length, uniquePages: uniquePages.size };
+    }
+
+    detectUnusualTiming(activities) {
+        if (activities.length < 2) return { detected: false };
+
+        const intervals = [];
+        for (let i = 1; i < activities.length; i++) {
+            intervals.push(activities[i].timestamp - activities[i-1].timestamp);
+        }
+
+        const avgInterval = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+        const veryFastIntervals = intervals.filter(interval => interval < 100).length; // Less than 100ms
+
+        if (veryFastIntervals > intervals.length * 0.5) { // More than 50% very fast
+            return { detected: true, fastIntervals: veryFastIntervals, avgInterval };
+        }
+        return { detected: false, fastIntervals: veryFastIntervals, avgInterval };
+    }
+
+    detectMultipleDevices(userEmail) {
+        const sessions = Array.from(this.activeSessions.values())
+            .filter(session => session.userEmail === userEmail && session.isActive);
+
+        const uniqueIPs = new Set(sessions.map(s => s.ipAddress));
+        const uniqueUserAgents = new Set(sessions.map(s => s.userAgent));
+
+        if (uniqueIPs.size > 2 || uniqueUserAgents.size > 2) {
+            return { detected: true, uniqueIPs: uniqueIPs.size, uniqueUserAgents: uniqueUserAgents.size };
+        }
+        return { detected: false, uniqueIPs: uniqueIPs.size, uniqueUserAgents: uniqueUserAgents.size };
+    }
+
+    calculateAnomalyRiskScore(anomalies) {
+        let score = 0;
+
+        if (anomalies.rapidClicks.detected) score += 25;
+        if (anomalies.suspiciousNavigation.detected) score += 20;
+        if (anomalies.unusualTiming.detected) score += 30;
+        if (anomalies.multipleDevices.detected) score += 25;
+
+        return Math.min(score, 100);
+    }
+
+    // Security policy enforcement
+    enforceSecurityPolicy(action, userEmail) {
+        if (!this.checkRateLimit(userEmail + '_' + action)) {
+            this.addSecurityEvent(`Rate limit violation: ${userEmail} attempted ${action}`, 'warning');
+            return false;
+        }
+
+        const anomalies = this.detectAnomalousActivity(userEmail);
+        if (anomalies.anomalous && anomalies.riskScore > 80) {
+            this.addSecurityEvent(`Anomalous activity blocked: ${userEmail} attempted ${action}`, 'critical');
+            return false;
+        }
+
+        return true;
+    }
+
+    // Enhanced logging
+    addSecurityEvent(message, severity = 'info') {
+        try {
+            const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+            const event = {
+                message: message,
+                severity: severity,
+                timestamp: new Date().toISOString(),
+                id: Date.now() + Math.random().toString(36).substr(2, 9),
+                ip: window.banSystem?.currentUserIP || 'unknown',
+                userAgent: navigator.userAgent.substring(0, 100),
+                url: window.location.href,
+                sessionId: localStorage.getItem('currentSessionId')
+            };
+
+            securityLog.unshift(event);
+
+            // Keep only last 500 events
+            if (securityLog.length > 500) {
+                securityLog.splice(500);
+            }
+
+            localStorage.setItem('securityLog', JSON.stringify(securityLog));
+
+            if (severity === 'critical') {
+                console.error(`🚨 CRITICAL SECURITY EVENT: ${message}`);
+            } else if (severity === 'warning') {
+                console.warn(`⚠️ SECURITY WARNING: ${message}`);
+            } else {
+                console.log(`🔒 Security Event: ${message}`);
+            }
+        } catch (error) {
+            console.error('Error adding security event:', error);
+            // Fallback log if localStorage fails
+            console.log(`[${new Date().toISOString()}] Security Event (${severity}): ${message}`);
+        }
+    }
+
+    // Security dashboard data
+    getSecurityDashboard() {
+        try {
+            const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+            const bannedUsers = JSON.parse(localStorage.getItem('bannedUsers') || '[]');
+            const bannedIPs = JSON.parse(localStorage.getItem('bannedIPs') || '[]');
+
+            const last24Hours = Date.now() - 24 * 60 * 60 * 1000;
+            const recentEvents = securityLog.filter(event => 
+                new Date(event.timestamp).getTime() > last24Hours
+            );
+
+            const eventTypes = {};
+            recentEvents.forEach(event => {
+                const type = this.categorizeSecurityEvent(event.message);
+                eventTypes[type] = (eventTypes[type] || 0) + 1;
+            });
+
+            return {
+                overview: {
+                    totalEvents: securityLog.length,
+                    recentEvents: recentEvents.length,
+                    bannedUsers: bannedUsers.length,
+                    bannedIPs: bannedIPs.length,
+                    activeSessions: this.activeSessions.size
+                },
+                eventTypes: eventTypes,
+                topThreats: this.getTopThreats(securityLog),
+                riskLevel: this.calculateCurrentRiskLevel(recentEvents)
+            };
+        } catch (error) {
+            console.error('Error getting security dashboard data:', error);
+            this.addSecurityEvent(`Error retrieving security dashboard data: ${error.message}`, 'error');
+            return { // Return default structure on error
+                overview: { totalEvents: 0, recentEvents: 0, bannedUsers: 0, bannedIPs: 0, activeSessions: 0 },
+                eventTypes: {},
+                topThreats: [],
+                riskLevel: 'MINIMAL'
+            };
+        }
+    }
+
+    categorizeSecurityEvent(message) {
+        if (message.includes('ban')) return 'Ban Events';
+        if (message.includes('sign') || message.includes('auth')) return 'Authentication';
+        if (message.includes('rate limit')) return 'Rate Limiting';
+        if (message.includes('anomal') || message.includes('suspicious')) return 'Anomaly Detection';
+        if (message.includes('session')) return 'Session Management';
+        return 'Other';
+    }
+
+    getTopThreats(securityLog) {
+        const threatCounts = {};
+
+        securityLog.forEach(event => {
+            if (event.severity === 'warning' || event.severity === 'critical') {
+                const threat = this.extractThreatType(event.message);
+                threatCounts[threat] = (threatCounts[threat] || 0) + 1;
+            }
+        });
+
+        return Object.entries(threatCounts)
+            .sort(([,a], [,b]) => b - a)
+            .slice(0, 5)
+            .map(([threat, count]) => ({ threat, count }));
+    }
+
+    extractThreatType(message) {
+        if (message.includes('rate limit')) return 'Rate Limit Violations';
+        if (message.includes('ban')) return 'Ban Evasion Attempts';
+        if (message.includes('anomal')) return 'Anomalous Behavior';
+        if (message.includes('dev') && message.includes('tool')) return 'Developer Tools Usage';
+        if (message.includes('external')) return 'External Requests';
+        return 'Unknown Threat';
+    }
+
+    calculateCurrentRiskLevel(recentEvents) {
+        const criticalEvents = recentEvents.filter(e => e.severity === 'critical').length;
+        const warningEvents = recentEvents.filter(e => e.severity === 'warning').length;
+
+        const score = (criticalEvents * 10) + (warningEvents * 5);
+
+        if (score >= 50) return 'HIGH';
+        if (score >= 20) return 'MEDIUM';
+        if (score >= 5) return 'LOW';
+        return 'MINIMAL';
+    }
+}
+
+// Enhanced Global functions for security management with payment protection
+window.testBanSystem = async function() {
+    if (!window.banSystem) {
+        alert('Ban system not initialized');
+        return;
+    }
+
+    const result = await window.banSystem.testBanSystem();
+    const status = result.overallStatus ? '✅ WORKING' : '❌ ISSUES FOUND';
+    alert(`Ban System Test Results:\n\n${status}\n\nDetails:\n${JSON.stringify(result.testResults, null, 2)}`);
+};
+
+// Payment Security Functions
+window.validatePaymentSecurity = function(userEmail, amount) {
+    try {
+        // Rate limiting check
+        if (!enforceSecurityPolicy('payment_attempt', userEmail)) {
+            logSystemEvent(`Payment validation failed: Rate limit exceeded for ${userEmail}`, 'warning', 'validatePaymentSecurity', 'script.js');
+            return { valid: false, reason: 'Rate limit exceeded' };
+        }
+
+        // Amount validation
+        if (amount < 0.01 || amount > 10000) {
+            logSystemEvent(`Payment validation failed: Invalid amount $${amount} for ${userEmail}`, 'warning', 'validatePaymentSecurity', 'script.js');
+            return { valid: false, reason: 'Invalid amount' };
+        }
+
+        // User authentication check
+        if (!isAuthenticated || !currentUser || currentUser.email !== userEmail) {
+            logSystemEvent(`Payment validation failed: Authentication required for ${userEmail}`, 'error', 'validatePaymentSecurity', 'script.js');
+            return { valid: false, reason: 'Authentication required' };
+        }
+
+        // Log security event
+        addSecurityEvent(`Payment security validation passed for ${userEmail} - Amount: $${amount}`);
+
+        return { valid: true, reason: 'Security checks passed' };
+    } catch (error) {
+        console.error('💥 Payment security validation error:', error);
+        logSystemEvent(`Payment security validation error for ${userEmail}: ${error.message}`, 'error', 'validatePaymentSecurity', 'script.js');
+        return { valid: false, reason: 'Security validation failed' };
+    }
+};
+
+window.logPaymentAttempt = function(userEmail, amount, status, details = '') {
+    try {
+        const paymentLog = JSON.parse(localStorage.getItem('paymentAttempts') || '[]');
+
+        paymentLog.unshift({
+            userEmail: userEmail,
+            amount: amount,
+            status: status,
+            details: details,
+            timestamp: new Date().toISOString(),
+            ip: window.banSystem?.currentUserIP || 'unknown',
+            userAgent: navigator.userAgent.substring(0, 100),
+            sessionId: localStorage.getItem('currentSessionId')
+        });
+
+        // Keep only last 100 payment attempts
+        if (paymentLog.length > 100) {
+            paymentLog.splice(100);
+        }
+
+        localStorage.setItem('paymentAttempts', JSON.stringify(paymentLog));
+
+        // Add to security log
+        addSecurityEvent(`Payment ${status}: ${userEmail} - $${amount} - ${details}`);
+
+    } catch (error) {
+        console.error('💥 Error logging payment attempt:', error);
+        logSystemEvent(`Error logging payment attempt for ${userEmail} ($${amount}, ${status}): ${error.message}`, 'error', 'logPaymentAttempt', 'script.js');
+    }
+};
+
+window.detectPaymentFraud = function(userEmail, amount, paymentData) {
+    try {
+        const paymentLog = JSON.parse(localStorage.getItem('paymentAttempts') || '[]');
+        const userPayments = paymentLog.filter(p => p.userEmail === userEmail);
+
+        const now = Date.now();
+        const fiveMinutesAgo = now - (5 * 60 * 1000);
+        const recentPayments = userPayments.filter(p => new Date(p.timestamp).getTime() > fiveMinutesAgo);
+
+        let suspiciousFlags = [];
+
+        // Rapid payment attempts
+        if (recentPayments.length > 3) {
+            suspiciousFlags.push('Multiple payment attempts in short time');
+        }
+
+        // Large amount check
+        if (amount > 1000) {
+            suspiciousFlags.push('Large payment amount');
+        }
+
+        // Failed payment pattern
+        const recentFailed = recentPayments.filter(p => p.status === 'failed').length;
+        if (recentFailed > 2) {
+            suspiciousFlags.push('Multiple failed payments');
+        }
+
+        if (suspiciousFlags.length > 0) {
+            addSecurityEvent(`🚨 Potential payment fraud detected for ${userEmail}: ${suspiciousFlags.join(', ')}`, 'warning');
+            return { suspicious: true, flags: suspiciousFlags };
+        }
+
+        return { suspicious: false, flags: [] };
+
+    } catch (error) {
+        console.error('💥 Error in fraud detection:', error);
+        logSystemEvent(`Payment fraud detection error for ${userEmail}: ${error.message}`, 'error', 'detectPaymentFraud', 'script.js');
+        return { suspicious: false, flags: [] };
+    }
+};
+
+// Console Tab Functions
+function loadConsoleTab() {
+    try {
+        const consoleContainer = document.getElementById('consoleContainer');
+        const logStats = document.getElementById('logStats');
+
+        if (!consoleContainer) return;
+
+        // Get system logs from localStorage
+        const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+        const systemLogs = JSON.parse(localStorage.getItem('systemLogs') || '[]');
+
+        // Combine all logs
+        const allLogs = [...securityLog, ...systemLogs].sort((a, b) => 
+            new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)
+        );
+
+        // Update log statistics
+        if (logStats) {
+            const errorCount = allLogs.filter(log => log.severity === 'error' || log.level === 'error').length;
+            const warningCount = allLogs.filter(log => log.severity === 'warning' || log.level === 'warning').length;
+            const infoCount = allLogs.filter(log => log.severity === 'info' || log.level === 'info').length;
+
+            logStats.innerHTML = `
+                <div class="log-stat-card">
+                    <h4>📊 Log Statistics</h4>
+                    <div class="stat-grid">
+                        <div class="stat-item">
+                            <span class="stat-label">Total Events:</span>
+                            <span class="stat-value">${allLogs.length}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">🔴 Errors:</span>
+                            <span class="stat-value error-count">${errorCount}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">⚠️ Warnings:</span>
+                            <span class="stat-value warning-count">${warningCount}</span>
+                        </div>
+                        <div class="stat-item">
+                            <span class="stat-label">ℹ️ Info:</span>
+                            <span class="stat-value info-count">${infoCount}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Clear and populate console container
+        consoleContainer.innerHTML = '';
+
+        if (allLogs.length === 0) {
+            consoleContainer.innerHTML = `
+                <div class="console-message no-logs">
+                    <div class="console-header">
+                        <span class="log-time">${new Date().toLocaleString()}</span>
+                        <span class="log-level info">INFO</span>
+                    </div>
+                    <div class="log-message">🖥️ System Console initialized - No logs found</div>
+                </div>
+            `;
+            return;
+        }
+
+        // Display logs (limit to last 100 for performance)
+        allLogs.slice(0, 100).forEach(log => {
+            const logEntry = document.createElement('div');
+            logEntry.className = `console-message ${log.severity || log.level || 'info'}`;
+
+            const timestamp = new Date(log.timestamp || log.date || Date.now());
+            const levelIcon = getLevelIcon(log.severity || log.level || 'info');
+            const functionInfo = log.function && log.file ? `[${log.function}@${log.file}]` : '';
+
+            logEntry.innerHTML = `
+                <div class="console-header">
+                    <span class="log-time">${timestamp.toLocaleString()}</span>
+                    <span class="log-level ${log.severity || log.level || 'info'}">${levelIcon} ${(log.severity || log.level || 'info').toUpperCase()}</span>
+                    ${functionInfo ? `<span class="log-function">${functionInfo}</span>` : ''}
+                </div>
+                <div class="log-message">${log.message}</div>
+                ${log.url ? `<div class="log-url">🌐 ${log.url}</div>` : ''}
+                ${log.sessionId ? `<div class="log-session">🔑 Session: ${log.sessionId}</div>` : ''}
+            `;
+
+            consoleContainer.appendChild(logEntry);
+        });
+
+        logSystemEvent(`Console tab loaded with ${allLogs.length} log entries`, 'info', 'loadConsoleTab', 'script.js');
+    } catch (error) {
+        console.error('Error loading console tab:', error);
+        logSystemEvent(`Error loading console tab: ${error.message}`, 'error', 'loadConsoleTab', 'script.js');
+    }
+}
+
+function getLevelIcon(level) {
+    const icons = {
+        'critical': '🚨',
+        'error': '❌',
+        'warning': '⚠️',
+        'info': 'ℹ️',
+        'debug': '🔧'
+    };
+    return icons[level] || 'ℹ️';
+}
+
+function clearSystemLogs() {
+    if (confirm('Are you sure you want to clear all system logs? This action cannot be undone.')) {
+        try {
+            localStorage.removeItem('systemLogs');
+            localStorage.removeItem('securityLog');
+
+            // Add a log entry about the clear action
+            addSecurityEvent('System logs cleared by admin');
+
+            // Reload the console tab
+            loadConsoleTab();
+
+            showToast('System logs cleared successfully!', 'success');
+            logSystemEvent('System logs cleared by admin', 'info', 'clearSystemLogs', 'script.js');
+        } catch (error) {
+            console.error('Error clearing system logs:', error);
+            logSystemEvent(`Error clearing system logs: ${error.message}`, 'error', 'clearSystemLogs', 'script.js');
+            showToast('Failed to clear system logs.', 'error');
+        }
+    }
+}
+
+function exportSystemLogs() {
+    try {
+        const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+        const systemLogs = JSON.parse(localStorage.getItem('systemLogs') || '[]');
+
+        const allLogs = [...securityLog, ...systemLogs].sort((a, b) => 
+            new Date(b.timestamp || b.date) - new Date(a.timestamp || a.date)
+        );
+
+        const exportData = {
+            exportedAt: new Date().toISOString(),
+            totalLogs: allLogs.length,
+            logs: allLogs
+        };
+
+        const dataStr = JSON.stringify(exportData, null, 2);
+        const blob = new Blob([dataStr], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `system_logs_export_${new Date().toISOString().split('T')[0]}.json`;
+        link.click();
+        URL.revokeObjectURL(url);
+
+        showToast('System logs exported successfully!', 'success');
+        logSystemEvent('System logs exported by admin', 'info', 'exportSystemLogs', 'script.js');
+    } catch (error) {
+        console.error('Error exporting system logs:', error);
+        logSystemEvent(`Error exporting system logs: ${error.message}`, 'error', 'exportSystemLogs', 'script.js');
+        showToast('Failed to export system logs.', 'error');
+    }
+}
+
+// System event logging function (for general script events)
+function logSystemEvent(message, level = 'info', functionName = 'N/A', filePath = 'N/A') {
+    try {
+        const logEntry = {
+            message: message,
+            level: level,
+            timestamp: new Date().toISOString(),
+            function: functionName,
+            file: filePath,
+            url: window.location.href,
+            sessionId: localStorage.getItem('currentSessionId')
+        };
+
+        // Store in localStorage for console tab
+        const systemLogs = JSON.parse(localStorage.getItem('systemLogs') || '[]');
+        systemLogs.unshift(logEntry);
+
+        // Keep only last 200 system logs
+        if (systemLogs.length > 200) {
+            systemLogs.splice(200);
+        }
+
+        localStorage.setItem('systemLogs', JSON.stringify(systemLogs));
+
+        // For critical errors, also log to console.error
+        if (level === 'error' || level === 'critical') {
+            console.error(`[${level.toUpperCase()}] [${functionName}] ${message}`);
+        } else if (level === 'warning') {
+            console.warn(`[${level.toUpperCase()}] [${functionName}] ${message}`);
+        } else {
+            console.log(`[${level.toUpperCase()}] [${functionName}] ${message}`);
+        }
+    } catch (error) {
+        console.error('Failed to log system event:', error);
+    }
+}
+
+// Helper function to enforce security policies
+function enforceSecurityPolicy(action, userEmail) {
+    if (!securityManagerInstance) {
+        console.warn('SecurityManager not initialized, skipping policy enforcement.');
+        return true; // Allow action if manager is not initialized
+    }
+    return securityManagerInstance.enforceSecurityPolicy(action, userEmail);
+}
+
+// Helper function to create a security session
+function createSecuritySession(userEmail) {
+    if (!securityManagerInstance) {
+        console.warn('SecurityManager not initialized, creating fallback session.');
+        // Fallback if manager is not properly initialized
+        return localStorage.getItem('currentSessionId') || 'fallback_session_' + Date.now();
+    }
+    return securityManagerInstance.createSession(userEmail);
+}
+
+// Add function to update navigation counts
+function updateNavigationCounts() {
+    try {
+        const products = JSON.parse(localStorage.getItem('products') || '[]');
+        const users = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+        const contacts = JSON.parse(localStorage.getItem('contactSubmissions') || '[]');
+        const purchases = JSON.parse(localStorage.getItem('purchases') || '[]');
+
+        // Update sidebar counts
+        const productsCount = document.getElementById('productsCount');
+        const usersCount = document.getElementById('usersCount');
+        const contactsCount = document.getElementById('contactsCount');
+
+        if (productsCount) productsCount.textContent = products.length;
+        if (usersCount) usersCount.textContent = users.length;
+        if (contactsCount) contactsCount.textContent = contacts.filter(c => c.status === 'unread').length;
+
+        // Update header quick stats
+        const totalRevenue = document.getElementById('totalRevenue');
+        const totalUsers = document.getElementById('totalUsers');
+
+        const revenue = purchases.reduce((sum, p) => sum + (p.finalTotal || 0), 0);
+
+        if (totalRevenue) totalRevenue.textContent = `$${revenue.toFixed(2)}`;
+        if (totalUsers) totalUsers.textContent = users.length;
+
+        // Update admin name
+        const adminName = document.getElementById('adminName');
+        if (adminName && currentUser) {
+            adminName.textContent = currentUser.given_name || currentUser.name || 'Administrator';
+        }
+    } catch (error) {
+        console.error('Error updating navigation counts:', error);
+    }
+}
+
+// Initialize hero particles
+function initHeroParticles() {
+    try {
+        const heroParticles = document.getElementById('heroParticles');
+        if (!heroParticles) return;
+
+        heroParticles.innerHTML = '';
+
+        for (let i = 0; i < 100; i++) {
+            const particle = document.createElement('div');
+            particle.className = 'particle';
+            particle.style.left = Math.random() * 100 + '%';
+            particle.style.top = Math.random() * 100 + '%';
+            particle.style.animationDelay = Math.random() * 6 + 's';
+            particle.style.animationDuration = (Math.random() * 3 + 3) + 's';
+
+            const size = Math.random() * 4 + 2;
+            particle.style.width = size + 'px';
+            particle.style.height = size + 'px';
+
+            heroParticles.appendChild(particle);
+        }
+    } catch (error) {
+        console.error('Error initializing hero particles:', error);
+        logSystemEvent(`Error initializing hero particles: ${error.message}`, 'error', 'initHeroParticles', 'script.js');
+    }
+}
+
+// Initialize matrix rain effect
+function initMatrixRain() {
+    try {
+        const body = document.body;
+        const matrixContainer = document.createElement('div');
+        matrixContainer.className = 'matrix-rain';
+        body.appendChild(matrixContainer);
+
+        const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()';
+
+        for (let i = 0; i < 50; i++) {
+            const drop = document.createElement('div');
+            drop.className = 'matrix-drop';
+            drop.textContent = characters[Math.floor(Math.random() * characters.length)];
+            drop.style.left = Math.random() * 100 + '%';
+            drop.style.animationDelay = Math.random() * 10 + 's';
+            drop.style.animationDuration = (Math.random() * 5 + 8) + 's';
+            matrixContainer.appendChild(drop);
+        }
+    } catch (error) {
+        console.error('Error initializing matrix rain:', error);
+        logSystemEvent(`Error initializing matrix rain: ${error.message}`, 'error', 'initMatrixRain', 'script.js');
+    }
+}
+
+function smoothPageTransition(url) {
+    try {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(45deg, #0a0a0a, #ffd700, #0a0a0a);
+            background-size: 400% 400%;
+            animation: rainbow 1s ease infinite;
+            z-index: 99999;
+            opacity: 0;
+            transition: opacity 0.5s ease;
+        `;
+
+        document.body.appendChild(overlay);
+
+        setTimeout(() => {
+            overlay.style.opacity = '1';
+        }, 10);
+
+        setTimeout(() => {
+            window.location.href = url;
+        }, 500);
+    } catch (error) {
+        console.error('Error during smooth page transition:', error);
+        logSystemEvent(`Error during smooth page transition to ${url}: ${error.message}`, 'error', 'smoothPageTransition', 'script.js');
+        window.location.href = url; // Fallback to direct navigation
+    }
+}
+
+function initScrollAnimations() {
+    try {
+        const observerOptions = {
+            threshold: 0.15,
+            rootMargin: '0px 0px -100px 0px'
+        };
+
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.style.animationPlayState = 'running';
+                    entry.target.classList.add('animate-in', 'section-reveal', 'visible');
+
+                    // Stagger animations for child elements
+                    const children = entry.target.querySelectorAll('.product-card, .about-card, .form-section');
+                    children.forEach((child, index) => {
+                        setTimeout(() => {
+                            child.classList.add('visible');
+                            child.style.animationDelay = `${index * 0.1}s`;
+                        }, index * 100);
+                    });
+                }
+            });
+        }, observerOptions);
+
+        const animatableElements = document.querySelectorAll('.product-card, .about-card, .contact-form, .analytics-card, .about-grid, .products-grid');
+        animatableElements.forEach(el => {
+            el.style.animationPlayState = 'paused';
+            el.classList.add('section-reveal');
+            observer.observe(el);
+        });
+        logSystemEvent('Scroll animations initialized', 'info', 'initScrollAnimations', 'script.js');
+    } catch (error) {
+        console.error('Error initializing scroll animations:', error);
+        logSystemEvent(`Error initializing scroll animations: ${error.message}`, 'error', 'initScrollAnimations', 'script.js');
+    }
+}
+
+// Enhanced smooth scrolling for navigation links
+function initSmoothScrolling() {
+    try {
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const href = this.getAttribute('href');
+                if (href === '#' || !href) return;
+                const target = document.querySelector(href);
+                if (target) {
+                    target.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start'
+                    });
+                }
+            });
+        });
+        logSystemEvent('Smooth scrolling initialized for anchor links', 'info', 'initSmoothScrolling', 'script.js');
+    } catch (error) {
+        console.error('Error initializing smooth scrolling:', error);
+        logSystemEvent(`Error initializing smooth scrolling: ${error.message}`, 'error', 'initSmoothScrolling', 'script.js');
+    }
+}
+
+// Cursor trail effect removed - was causing glitchy behavior
+
+function initTypingAnimation() {
+    try {
+        const heroTitle = document.querySelector('.hero-title');
+        if (heroTitle) {
+            const text = heroTitle.textContent;
+            heroTitle.textContent = '';
+            heroTitle.style.borderRight = '2px solid #ffd700';
+            heroTitle.style.animation = 'blink 1s infinite';
+
+            let i = 0;
+            const typeWriter = () => {
+                if (i < text.length) {
+                    heroTitle.textContent += text.charAt(i);
+                    i++;
+                    setTimeout(typeWriter, 100);
+                } else {
+                    setTimeout(() => {
+                        heroTitle.style.borderRight = 'none';
+                        heroTitle.style.animation = 'none';
+                    }, 1000);
+                }
+            };
+
+            setTimeout(typeWriter, 1500);
+            logSystemEvent('Typing animation initialized for hero title', 'info', 'initTypingAnimation', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error initializing typing animation:', error);
+        logSystemEvent(`Error initializing typing animation: ${error.message}`, 'error', 'initTypingAnimation', 'script.js');
+    }
+}
+
+function initParallaxEffect() {
+    try {
+        window.addEventListener('scroll', () => {
+            const scrolled = window.pageYOffset;
+            const heroContent = document.querySelector('.hero-content');
+            const heroParticles = document.querySelector('.hero-particles');
+
+            if (heroContent) {
+                heroContent.style.transform = `translateY(${scrolled * 0.5}px)`;
+            }
+
+            if (heroParticles) {
+                heroParticles.style.transform = `translateY(${scrolled * 0.3}px)`;
+            }
+        });
+        logSystemEvent('Parallax effect initialized', 'info', 'initParallaxEffect', 'script.js');
+    } catch (error) {
+        console.error('Error initializing parallax effect:', error);
+        logSystemEvent(`Error initializing parallax effect: ${error.message}`, 'error', 'initParallaxEffect', 'script.js');
+    }
+}
+
+function initButtonAnimations() {
+    try {
+        document.addEventListener('click', (e) => {
+            if (e.target.matches('button, .btn, .nav-link')) {
+                const ripple = document.createElement('span');
+                const rect = e.target.getBoundingClientRect();
+                const size = Math.max(rect.width, rect.height);
+                const x = e.clientX - rect.left - size / 2;
+                const y = e.clientY - rect.top - size / 2;
+
+                ripple.style.cssText = `
+                    position: absolute;
+                    width: ${size}px;
+                    height: ${size}px;
+                    left: ${x}px;
+                    top: ${y}px;
+                    background: rgba(255, 215, 0, 0.3);
+                    border-radius: 50%;
+                    transform: scale(0);
+                    animation: ripple 0.6s ease-out;
+                    pointer-events: none;
+                `;
+
+                const style = document.createElement('style');
+                style.textContent = `
+                    @keyframes ripple {
+                        to {
+                            transform: scale(2);
+                            opacity: 0;
+                        }
+                    }
+                `;
+                document.head.appendChild(style);
+
+                e.target.style.position = 'relative';
+                e.target.style.overflow = 'hidden';
+                e.target.appendChild(ripple);
+
+                setTimeout(() => {
+                    ripple.remove();
+                    style.remove();
+                }, 600);
+            }
+        });
+        logSystemEvent('Button click animations initialized', 'info', 'initButtonAnimations', 'script.js');
+    } catch (error) {
+        console.error('Error initializing button animations:', error);
+        logSystemEvent(`Error initializing button animations: ${error.message}`, 'error', 'initButtonAnimations', 'script.js');
+    }
+}
+
+function handleEnterExperience() {
+    window.location.href = 'products.html';
+}
+
+function initProductsPage() {
+    try {
+        const categoryFilter = document.getElementById('categoryFilter');
+        const productSearch = document.getElementById('productSearch');
+
+        populateCategoryFilter();
+
+        if (categoryFilter) {
+            categoryFilter.addEventListener('change', filterProducts);
+        }
+
+        if (productSearch) {
+            productSearch.addEventListener('input', filterProducts);
+        }
+        logSystemEvent('Products page initialized', 'info', 'initProductsPage', 'script.js');
+    } catch (error) {
+        console.error('Error initializing products page:', error);
+        logSystemEvent(`Error initializing products page: ${error.message}`, 'error', 'initProductsPage', 'script.js');
+    }
+}
+
+function populateCategoryFilter() {
+    try {
+        const categoryFilter = document.getElementById('categoryFilter');
+        if (!categoryFilter) return;
+
+        const products = JSON.parse(localStorage.getItem('products') || '[]');
+        const categories = [...new Set(products.map(p => p.category).filter(Boolean))];
+
+        categoryFilter.innerHTML = '<option value="">All Categories</option>';
+
+        categories.forEach(category => {
+            const option = document.createElement('option');
+            option.value = category;
+            option.textContent = getCategoryDisplayName(category);
+            categoryFilter.appendChild(option);
+        });
+    } catch (error) {
+        console.error('Error populating category filter:', error);
+        logSystemEvent(`Error populating category filter: ${error.message}`, 'error', 'populateCategoryFilter', 'script.js');
+    }
+}
+
+function getCategoryDisplayName(category) {
+    const categoryMap = {
+        'music': '🎵 Music Production',
+        'fps': '🎯 First Person Shooters',
+        'design': '🎨 Design & Graphics',
+        'development': '💻 Development Tools',
+        'productivity': '⚡ Productivity',
+        'gaming': '🎮 Gaming Utilities',
+        'security': '🔒 Security & Privacy',
+        'other': '📦 Other'
+    };
+    return categoryMap[category] || category;
+}
+
+function isProductInCart(productId) {
+    try {
+        const cart = JSON.parse(localStorage.getItem('cart') || '[]');
+        return cart.some(item => item.id === productId);
+    } catch (error) {
+        console.error('Error checking if product is in cart:', error);
+        logSystemEvent(`Error checking cart for product ${productId}: ${error.message}`, 'error', 'isProductInCart', 'script.js');
+        return false;
+    }
+}
+
+function updateProductButtons() {
+    try {
+        const cartButtons = document.querySelectorAll('.cart-btn');
+        cartButtons.forEach(button => {
+            const productId = button.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+            if (productId && isProductInCart(productId)) {
+                button.innerHTML = `
+                    <span class="btn-icon">✅</span>
+                    <span class="btn-text">Added to Cart</span>
+                `;
+                button.style.background = '#4CAF50';
+                button.style.borderColor = '#4CAF50';
+                button.style.color = '#fff';
+                button.disabled = true;
+                button.style.cursor = 'not-allowed';
+            }
+        });
+    } catch (error) {
+        console.error('Error updating product buttons:', error);
+        logSystemEvent(`Error updating product buttons: ${error.message}`, 'error', 'updateProductButtons', 'script.js');
+    }
+}
+
+function filterProducts() {
+    try {
+        const categoryFilter = document.getElementById('categoryFilter');
+        const productSearch = document.getElementById('productSearch');
+        const searchResults = document.getElementById('searchResults');
+
+        const selectedCategory = categoryFilter?.value || '';
+        const searchTerm = productSearch?.value.toLowerCase() || '';
+
+        const products = JSON.parse(localStorage.getItem('products') || '[]');
+
+        let filteredProducts = products.filter(product => {
+            const matchesCategory = !selectedCategory || product.category === selectedCategory;
+            const matchesSearch = !searchTerm || 
+                product.title.toLowerCase().includes(searchTerm) ||
+                product.description.toLowerCase().includes(searchTerm) ||
+                product.category.toLowerCase().includes(searchTerm);
+
+            return matchesCategory && matchesSearch;
+        });
+
+        if (searchResults) {
+            if (searchTerm || selectedCategory) {
+                searchResults.textContent = `Showing ${filteredProducts.length} of ${products.length} products`;
+            } else {
+                searchResults.textContent = `Showing all ${products.length} products`;
+            }
+        }
+
+        displayFilteredProducts(filteredProducts);
+    } catch (error) {
+        console.error('Error filtering products:', error);
+        logSystemEvent(`Error filtering products: ${error.message}`, 'error', 'filterProducts', 'script.js');
+    }
+}
+
+function displayFilteredProducts(products) {
+    try {
+        const productsGrid = document.getElementById('productsGrid');
+        const noProductsMessage = document.getElementById('noProductsMessage');
+
+        if (!productsGrid) return;
+
+        if (products.length === 0) {
+            productsGrid.innerHTML = '';
+            if (noProductsMessage) {
+                noProductsMessage.style.display = 'block';
+            }
+            return;
+        }
+
+        if (noProductsMessage) {
+            noProductsMessage.style.display = 'none';
+        }
+
+        productsGrid.innerHTML = products.map(product => `
+            <div class="product-card">
+                <div class="product-image-container">
+                    ${product.image ? 
+                        `<img src="${product.image}" alt="${product.title}" class="product-image">` : 
+                        `<img src="Asset/There is no Product Image Available.png" alt="No Image Available" class="product-image placeholder">`
+                    }
+                    ${product.featured ? '<div class="featured-badge">⭐ Featured</div>' : ''}
+                    <div class="product-views">👁️ ${product.views || 0}</div>
+                </div>
+                <div class="product-content">
+                    <div class="product-header">
+                        <div class="product-info-row">
+                            <span class="product-info-label">Name:</span>
+                            <h3 class="product-title">${product.title}</h3>
+                        </div>
+                        <div class="product-info-row">
+                            <span class="product-info-label">Category:</span>
+                            <span class="product-category">${getCategoryDisplayName(product.category)}</span>
+                        </div>
+                        <div class="product-info-row">
+                            <span class="product-info-label">Price (USD):</span>
+                            <div class="product-price-container">
+                                ${product.discount > 0 ? 
+                                    `<div class="product-price discounted">${product.price}</div>
+                                     <div class="product-original-price">${product.originalPrice || product.price}</div>
+                                     <div class="product-discount-badge">${product.discount}% OFF</div>` :
+                                    `<div class="product-price">${product.price}</div>`
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    <div class="product-description-section">
+                        <span class="product-description-label">Description:</span>
+                        <p class="product-description">${product.description.length > 100 ? product.description.substring(0, 100) + '...' : product.description}</p>
+                    </div>
+                    <div class="product-actions">
+                        ${product.youtube ? 
+                            `<button onclick="window.open('${product.youtube}', '_blank', 'noopener,noreferrer')" class="product-btn youtube-btn">
+                                <span class="btn-icon">🎥</span>
+                                <span class="btn-text">Preview</span>
+                            </button>` : ''
+                        }
+                        <button onclick="addToCart('${product.id}')" class="product-btn cart-btn ${!product.youtube && !product.external ? 'full-width' : ''} ${isProductInCart(product.id) ? 'in-cart' : ''}" ${isProductInCart(product.id) ? 'disabled' : ''}>
+                            <span class="btn-icon">${isProductInCart(product.id) ? '✅' : '🛒'}</span>
+                            <span class="btn-text">${isProductInCart(product.id) ? 'Added to Cart' : 'Add to Cart'}</span>
+                        </button>
+                        ${product.external ? 
+                            `<button onclick="window.open('${product.external}', '_blank', 'noopener,noreferrer')" class="product-btn external-btn">
+                                <span class="btn-icon">🔗</span>
+                                <span class="btn-text">External</span>
+                            </button>` : ''
+                        }
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    } catch (error) {
+        console.error('Error displaying filtered products:', error);
+        logSystemEvent(`Error displaying filtered products: ${error.message}`, 'error', 'displayFilteredProducts', 'script.js');
+    }
+}
+
+// Global security manager instance
+let securityManagerInstance = null;
+
+// Initialize Security Manager function
+function initializeSecurityManager() {
+    try {
+        if (!securityManagerInstance) {
+            securityManagerInstance = new EnhancedSecurityManager();
+            console.log('🔒 Security Manager initialized');
+        }
+        return securityManagerInstance;
+    } catch (error) {
+        console.error('Failed to initialize Security Manager:', error);
+        // Create a minimal fallback security manager
+        securityManagerInstance = {
+            addSecurityEvent: function(message, severity = 'info') {
+                try {
+                    const securityLog = JSON.parse(localStorage.getItem('securityLog') || '[]');
+                    securityLog.unshift({
+                        message: message,
+                        severity: severity,
+                        timestamp: new Date().toISOString(),
+                        id: Date.now()
+                    });
+                    if (securityLog.length > 100) securityLog.splice(100);
+                    localStorage.setItem('securityLog', JSON.stringify(securityLog));
+                } catch (e) {
+                    console.log(`Security Event: ${message}`);
+                }
+            },
+            createSession: function(userEmail) {
+                return 'fallback_session_' + Date.now();
+            },
+            checkRateLimit: function() { return true; },
+            enforceSecurityPolicy: function() { return true; },
+            getSecurityDashboard: function() {
+                return {
+                    overview: { totalEvents: 0, recentEvents: 0, bannedUsers: 0, bannedIPs: 0, activeSessions: 0 },
+                    eventTypes: {},
+                    topThreats: [],
+                    riskLevel: 'MINIMAL'
+                };
+            },
+            activeSessions: new Map()
+        };
+        return securityManagerInstance;
+    }
+}
+
+// Lazy load function for non-critical features
+function lazyLoadFeatures() {
+    // Load visual enhancements after a delay
+    setTimeout(() => {
+        initMatrixRain();
+        initTypingAnimation();
+        initParallaxEffect();
+        initButtonAnimations();
+        logSystemEvent('Visual enhancements lazy loaded', 'info', 'lazyLoadFeatures', 'script.js');
+    }, 1000);
+
+    // Load animations when they come into view
+    const observer = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                initScrollAnimations();
+                observer.disconnect();
+            }
+        });
+    });
+
+    const heroSection = document.querySelector('.hero');
+    if (heroSection) observer.observe(heroSection);
+}
+
+// Email obfuscation
+function deobfuscateEmail() {
+    try {
+        const emailElement = document.getElementById('contact-email');
+        if (emailElement) {
+            const parts = ['Qualiticsproduction', '@', 'gmail', '.', 'com'];
+            emailElement.textContent = parts.join('');
+            logSystemEvent('Contact email deobfuscated', 'info', 'deobfuscateEmail', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error deobfuscating email:', error);
+        logSystemEvent(`Error deobfuscating email: ${error.message}`, 'error', 'deobfuscateEmail', 'script.js');
+    }
+}
+
+// Enhanced keyboard navigation
+function initKeyboardNavigation() {
+    try {
+        // Skip to main content link
+        const skipLink = document.createElement('a');
+        skipLink.href = '#main-content';
+        skipLink.textContent = 'Skip to main content';
+        skipLink.className = 'skip-link';
+        skipLink.style.cssText = `
+            position: absolute;
+            top: -40px;
+            left: 6px;
+            background: #ffd700;
+            color: #000;
+            padding: 8px;
+            text-decoration: none;
+            border-radius: 4px;
+            z-index: 100;
+            transition: top 0.3s;
+        `;
+
+        skipLink.addEventListener('focus', function() {
+            this.style.top = '6px';
+        });
+
+        skipLink.addEventListener('blur', function() {
+            this.style.top = '-40px';
+        });
+
+        document.body.insertBefore(skipLink, document.body.firstChild);
+
+        // Add keyboard support for custom buttons and interactive elements
+        const interactiveElements = document.querySelectorAll('.cta-btn, .cart-btn, .auth-btn, .product-card, .nav-link');
+
+        interactiveElements.forEach(element => {
+            // Ensure elements are focusable
+            if (!element.tabIndex && element.tabIndex !== 0) {
+                element.tabIndex = 0;
+            }
+
+            // Add keyboard event listeners
+            element.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    element.click();
+                }
+            });
+
+            // Visual focus indicators
+            element.addEventListener('focus', function() {
+                this.style.outline = '2px solid #ffd700';
+                this.style.outlineOffset = '2px';
+            });
+
+            element.addEventListener('blur', function() {
+                this.style.outline = '';
+                this.style.outlineOffset = '';
+            });
+        });
+        logSystemEvent('Keyboard navigation initialized', 'info', 'initKeyboardNavigation', 'script.js');
+    } catch (error) {
+        console.error('Error initializing keyboard navigation:', error);
+        logSystemEvent(`Error initializing keyboard navigation: ${error.message}`, 'error', 'initKeyboardNavigation', 'script.js');
+    }
+}
+
+// Price formatting functions
+function formatPriceInput(input) {
+    if (!input) return '$0.00';
+
+    try {
+        // Remove any non-numeric characters except decimal point
+        let numericValue = input.replace(/[^\d.]/g, '');
+
+        // Handle multiple decimal points
+        const parts = numericValue.split('.');
+        if (parts.length > 2) {
+            numericValue = parts[0] + '.' + parts.slice(1).join('');
+        }
+
+        // Parse as float
+        const price = parseFloat(numericValue) || 0;
+
+        // Format as currency
+        return '$' + price.toFixed(2);
+    } catch (error) {
+        console.error('Error formatting price input:', error);
+        logSystemEvent(`Error formatting price input "${input}": ${error.message}`, 'error', 'formatPriceInput', 'script.js');
+        return '$0.00';
+    }
+}
+
+function updatePricePreview() {
+    try {
+        const priceInput = document.getElementById('productPrice');
+        const pricePreview = document.getElementById('pricePreview');
+
+        if (priceInput && pricePreview) {
+            const formattedPrice = formatPriceInput(priceInput.value);
+            pricePreview.textContent = formattedPrice;
+        }
+    } catch (error) {
+        console.error('Error updating price preview:', error);
+        logSystemEvent(`Error updating price preview: ${error.message}`, 'error', 'updatePricePreview', 'script.js');
+    }
+}
+
+function initPriceInput() {
+    try {
+        const priceInput = document.getElementById('productPrice');
+        if (priceInput) {
+            priceInput.addEventListener('input', updatePricePreview);
+            priceInput.addEventListener('blur', function() {
+                this.value = formatPriceInput(this.value).replace('$', '');
+                updatePricePreview();
+            });
+            logSystemEvent('Price input initialized', 'info', 'initPriceInput', 'script.js');
+        }
+    } catch (error) {
+        console.error('Error initializing price input:', error);
+        logSystemEvent(`Error initializing price input: ${error.message}`, 'error', 'initPriceInput', 'script.js');
+    }
+}
+
+// Promo code system
+function getUsedPromoCodes(userEmail) {
+    try {
+        const usedCodes = JSON.parse(localStorage.getItem('usedPromoCodes') || '{}');
+        return usedCodes[userEmail] || [];
+    } catch (error) {
+        console.error('Error getting used promo codes:', error);
+        logSystemEvent(`Error getting used promo codes for ${userEmail}: ${error.message}`, 'error', 'getUsedPromoCodes', 'script.js');
+        return [];
+    }
+}
+
+function markPromoCodeAsUsed(userEmail, code) {
+    try {
+        const usedCodes = JSON.parse(localStorage.getItem('usedPromoCodes') || '{}');
+        if (!usedCodes[userEmail]) {
+            usedCodes[userEmail] = [];
+        }
+        usedCodes[userEmail].push({
+            code: code,
+            usedAt: new Date().toISOString()
+        });
+        localStorage.setItem('usedPromoCodes', JSON.stringify(usedCodes));
+    } catch (error) {
+        console.error('Error marking promo code as used:', error);
+        logSystemEvent(`Error marking promo code "${code}" as used for ${userEmail}: ${error.message}`, 'error', 'markPromoCodeAsUsed', 'script.js');
+    }
+}
+
+function isPromoCodeUsed(userEmail, code) {
+    try {
+        const usedCodes = getUsedPromoCodes(userEmail);
+        return usedCodes.some(used => used.code === code);
+    } catch (error) {
+        console.error('Error checking if promo code is used:', error);
+        logSystemEvent(`Error checking if promo code "${code}" is used by ${userEmail}: ${error.message}`, 'error', 'isPromoCodeUsed', 'script.js');
+        return false;
+    }
+}
+
+function applyPromoCode() {
+    try {
+        const promoInput = document.getElementById('promoCodeInput');
+        const promoMessage = document.getElementById('promoMessage');
+
+        if (!promoInput || !promoMessage) return;
+
+        const code = promoInput.value.trim().toUpperCase();
+
+        if (!code) {
+            showPromoMessage('Please enter a promo code', 'error');
+            return;
+        }
+
+        if (!isAuthenticated || !currentUser) {
+            showPromoMessage('Please sign in to use promo codes', 'error');
+            return;
+        }
+
+        // Check if user already used this code
+        if (isPromoCodeUsed(currentUser.email, code)) {
+            showPromoMessage('❌ You have already used this promo code', 'error');
+            return;
+        }
+
+        // Define available promo codes
+        const promoCodes = {
+            'GRANTOPENING': { 
+                discount: 0.15, 
+                type: 'percentage', 
+                description: '15% off your entire order',
+                oneTimeUse: true
+            },
+            'SAVE10': { 
+                discount: 0.10, 
+                type: 'percentage', 
+                description: '10% off your order',
+                oneTimeUse: false
+            },
+            'WELCOME': { 
+                discount: 5, 
+                type: 'fixed', 
+                description: '$5 off your order',
+                oneTimeUse: false
+            },
+            'PREMIUM': { 
+                discount: 0.20, 
+                type: 'percentage', 
+                description: '20% off for premium users',
+                oneTimeUse: false
+            }
+        };
+
+        if (promoCodes[code]) {
+            const promo = promoCodes[code];
+
+            // Mark as used if it's a one-time use code
+            if (promo.oneTimeUse) {
+                markPromoCodeAsUsed(currentUser.email, code);
+            }
+
+            // Store applied promo code for cart calculation
+            localStorage.setItem('appliedPromoCode', JSON.stringify({
+                code: code,
+                ...promo,
+                appliedAt: new Date().toISOString(),
+                userEmail: currentUser.email
+            }));
+
+            showPromoMessage(`✅ ${promo.description} applied successfully!`, 'success');
+            updateCartDisplay(); // Refresh cart to show discount
+            logSystemEvent(`Promo code "${code}" applied by ${currentUser.email}`, 'info', 'applyPromoCode', 'script.js');
+
+            // Add security event for promo code usage
+            addSecurityEvent(`Promo code ${code} applied by ${currentUser.email}`);
+        } else {
+            showPromoMessage('❌ Invalid promo code', 'error');
+        }
+    } catch (error) {
+        console.error('Error applying promo code:', error);
+        logSystemEvent(`Error applying promo code "${promoInput?.value?.trim()}" by ${currentUser?.email}: ${error.message}`, 'error', 'applyPromoCode', 'script.js');
+        showPromoMessage('An error occurred while applying the promo code.', 'error');
+    }
+}
+
+function showPromoMessage(message, type) {
+    try {
+        const promoMessage = document.getElementById('promoMessage');
+        if (promoMessage) {
+            promoMessage.textContent = message;
+            promoMessage.className = `promo-message ${type}`;
+            promoMessage.style.display = 'block';
+
+            // Auto-hide after 5 seconds
+            setTimeout(() => {
+                promoMessage.style.display = 'none';
+            }, 5000);
+        }
+    } catch (error) {
+        console.error('Error showing promo message:', error);
+        logSystemEvent(`Error showing promo message "${message}" (${type}): ${error.message}`, 'error', 'showPromoMessage', 'script.js');
+    }
+}
+
+function clearAppliedPromoCode() {
+    try {
+        localStorage.removeItem('appliedPromoCode');
+        const promoInput = document.getElementById('promoCodeInput');
+        const promoMessage = document.getElementById('promoMessage');
+
+        if (promoInput) promoInput.value = '';
+        if (promoMessage) promoMessage.style.display = 'none';
+    } catch (error) {
+        console.error('Error clearing applied promo code:', error);
+        logSystemEvent(`Error clearing applied promo code: ${error.message}`, 'error', 'clearAppliedPromoCode', 'script.js');
+    }
+}
+
+// Add updateNavigationCounts function here as it's called within DOMContentLoaded
+function updateNavigationCounts() {
+    try {
+        const products = JSON.parse(localStorage.getItem('products') || '[]');
+        const users = JSON.parse(localStorage.getItem('registeredUsers') || '[]');
+        const contacts = JSON.parse(localStorage.getItem('contactSubmissions') || '[]');
+        const purchases = JSON.parse(localStorage.getItem('purchases') || '[]');
+
+        // Update sidebar counts
+        const productsCount = document.getElementById('productsCount');
+        const usersCount = document.getElementById('usersCount');
+        const contactsCount = document.getElementById('contactsCount');
+
+        if (productsCount) productsCount.textContent = products.length;
+        if (usersCount) usersCount.textContent = users.length;
+        if (contactsCount) contactsCount.textContent = contacts.filter(c => c.status === 'unread').length;
+
+        // Update header quick stats
+        const totalRevenue = document.getElementById('totalRevenue');
+        const totalUsers = document.getElementById('totalUsers');
+
+        const revenue = purchases.reduce((sum, p) => sum + (p.finalTotal || 0), 0);
+
+        if (totalRevenue) totalRevenue.textContent = `$${revenue.toFixed(2)}`;
+        if (totalUsers) totalUsers.textContent = users.length;
+
+        // Update admin name
+        const adminName = document.getElementById('adminName');
+        if (adminName && currentUser) {
+            adminName.textContent = currentUser.given_name || currentUser.name || 'Administrator';
+        }
+    } catch (error) {
+        console.error('Error updating navigation counts:', error);
+    }
+}

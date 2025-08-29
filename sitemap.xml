@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+        <loc>https://qualitics-production-1.onrender.com/</loc>
+        <lastmod>2025-01-12</lastmod>
+        <priority>1.0</priority>
+    </url>
+    <url>
+        <loc>https://qualitics-production-1.onrender.com/products.html</loc>
+        <lastmod>2025-01-12</lastmod>
+        <priority>0.8</priority>
+    </url>
+    <url>
+        <loc>https://qualitics-production-1.onrender.com/purchase.html</loc>
+        <lastmod>2025-01-12</lastmod>
+        <priority>0.8</priority>
+    </url>
+    <url>
+        <loc>https://qualitics-production-1.onrender.com/privacy-policy.html</loc>
+        <lastmod>2025-01-12</lastmod>
+        <priority>0.5</priority>
+    </url>
+    <url>
+        <loc>https://qualitics-production-1.onrender.com/terms-of-service.html</loc>
+        <lastmod>2025-01-12</lastmod>
+        <priority>0.5</priority>
+    </url>
+    <url>
+        <loc>https://qualitics-production-1.onrender.com/support.html</loc>
+        <lastmod>2025-01-12</lastmod>
+        <priority>0.5</priority>
+    </url>
+</urlset>
